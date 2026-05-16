@@ -25,6 +25,10 @@ command -v curl     >/dev/null 2>&1 || fail "curl not found"
 command -v opencode >/dev/null 2>&1 || fail "opencode not found — install from https://opencode.ai"
 ok "docker, git, curl, opencode present"
 
+command -v stripe >/dev/null 2>&1 \
+    && ok "stripe CLI present" \
+    || warn "stripe CLI not found — install for local webhook testing: https://stripe.com/docs/stripe-cli"
+
 step "Setting up .env"
 
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -103,6 +107,10 @@ config = {
         "gova-builder": {
             "command": "docker",
             "args": ["exec", "-i", container, "/usr/local/bin/mcp-server"]
+        },
+        "stripe": {
+            "type": "http",
+            "url": "https://mcp.stripe.com/"
         }
     }
 }
@@ -110,7 +118,7 @@ config = {
 with open(mcp_path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
-print(f"  + .mcp.json → gova-builder via {container}")
+print(f"  + .mcp.json → gova-builder + stripe via {container}")
 PYEOF
 
 ok ".mcp.json generated"
