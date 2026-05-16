@@ -17,7 +17,7 @@ function render() {
   const p = document.createElement('p');
   p.className = 'text-sm text-gray-500';
   p.textContent = 'TODO: implement {{.Title}} page.';
-  app.innerHTML = '';
+  app.replaceChildren();
   app.appendChild(p);
 }
 

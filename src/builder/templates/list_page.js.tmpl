@@ -15,7 +15,7 @@ export async function loadList() {
 }
 
 function renderList(items) {
-  listEl.innerHTML = '';
+  listEl.replaceChildren();
   if (!items.length) {
     const p = document.createElement('p');
     p.className = 'text-sm text-gray-500';
