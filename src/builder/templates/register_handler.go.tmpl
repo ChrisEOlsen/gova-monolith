@@ -1,0 +1,49 @@
+package handlers
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"gova/app/cache"
+	"gova/app/middleware"
+	"gova/app/models"
+)
+
+func RegisterPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name     string `json:"name"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(body.Name)
+		email := strings.TrimSpace(body.Email)
+		password := body.Password
+
+		if name == "" || email == "" || len(password) < 8 {
+			jsonError(w, "Name, email and password (min 8 chars) are required.", http.StatusBadRequest)
+			return
+		}
+
+		userModel := models.NewUserModel(readDB, writeDB, appCache)
+		id, err := userModel.Create(name, email, password)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				jsonError(w, "An account with that email already exists.", http.StatusConflict)
+				return
+			}
+			jsonError(w, "Registration failed. Please try again.", http.StatusInternalServerError)
+			return
+		}
+
+		middleware.SetSession(w, id, 24*time.Hour)
+		jsonOK(w, map[string]any{"id": id})
+	}
+}
