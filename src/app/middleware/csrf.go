@@ -1,0 +1,54 @@
+package middleware
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http"
+)
+
+const csrfKey ctxKey = "csrf_token"
+
+func generateToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func CSRFToken(r *http.Request) string {
+	v, _ := r.Context().Value(csrfKey).(string)
+	return v
+}
+
+func CSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := ""
+		if cookie, err := r.Cookie("csrf_token"); err == nil {
+			token = cookie.Value
+		} else {
+			token = generateToken()
+			http.SetCookie(w, &http.Cookie{
+				Name:     "csrf_token",
+				Value:    token,
+				Path:     "/",
+				HttpOnly: false,
+				SameSite: http.SameSiteStrictMode,
+			})
+		}
+
+		ctx := context.WithValue(r.Context(), csrfKey, token)
+
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			headerToken := r.Header.Get("X-CSRF-Token")
+			if !hmac.Equal([]byte(token), []byte(headerToken)) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte(`{"ok":false,"error":"invalid CSRF token"}`))
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
