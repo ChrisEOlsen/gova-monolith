@@ -1,0 +1,54 @@
+import { get, del } from '/static/js/lib/api.js';
+{{if .AuthRequired -}}
+import { requireAuth } from '/static/js/lib/auth.js';
+{{- end}}
+
+const listEl = document.getElementById('{{.Name}}-list');
+
+export async function loadList() {
+  const res = await get('/api/{{.PluralName}}');
+  if (!res.ok) {
+    listEl.textContent = 'Failed to load.';
+    return;
+  }
+  renderList(res.data ?? []);
+}
+
+function renderList(items) {
+  listEl.innerHTML = '';
+  if (!items.length) {
+    const p = document.createElement('p');
+    p.className = 'text-sm text-gray-500';
+    p.textContent = 'No items yet.';
+    listEl.appendChild(p);
+    return;
+  }
+  const ul = document.createElement('ul');
+  ul.className = 'divide-y divide-gray-100';
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.className = 'py-3 flex items-center justify-between';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'text-sm font-medium';
+    nameSpan.textContent = item.{{(index .Fields 0).Name}};
+    const dateSpan = document.createElement('span');
+    dateSpan.className = 'text-xs text-gray-500';
+    dateSpan.textContent = new Date(item.created_at).toLocaleDateString();
+    li.appendChild(nameSpan);
+    li.appendChild(dateSpan);
+    ul.appendChild(li);
+  });
+  listEl.appendChild(ul);
+}
+
+// @inject-forms
+
+async function init() {
+  {{if .AuthRequired -}}
+  const user = await requireAuth();
+  if (!user) return;
+  {{- end}}
+  await loadList();
+}
+
+init();

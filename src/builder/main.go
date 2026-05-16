@@ -446,7 +446,38 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	), nil
 }
 func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	name, _ := req.Params.Arguments["name"].(string)
+	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
+	if !isSafeIdent(name) {
+		return errResult("invalid name"), nil
+	}
+	fields := parseFields(rawFieldsToStrings(rawFields))
+	if len(fields) == 0 {
+		return errResult("at least one field is required"), nil
+	}
+	data := newData(name, fields)
+	data.Title = toPascal(toPlural(name))
+
+	type fileSpec struct{ tmpl, out string }
+	specs := []fileSpec{
+		{"model.go.tmpl", "/src/app/models/" + toPascal(name) + ".go"},
+		{"list_handler.go.tmpl", "/src/app/handlers/" + name + "_list.go"},
+		{"list_page.html.tmpl", "/src/app/static/pages/" + toPlural(name) + ".html"},
+		{"list_page.js.tmpl", "/src/app/static/js/" + toPlural(name) + ".js"},
+	}
+
+	results := []string{}
+	for _, spec := range specs {
+		if err := renderToFile(spec.tmpl, spec.out, data); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+spec.out)
+	}
+	return mcp.NewToolResultText(
+		strings.Join(results, "\n") +
+			"\n\nNext: wire GET route in main.go, add POST handler with create_handler, add form with add_js_form, call build_css.\n\n" +
+			runPatternChecks(),
+	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return errResult("not yet implemented"), nil
