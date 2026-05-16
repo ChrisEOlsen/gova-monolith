@@ -9,9 +9,6 @@ RUN ARCH=$(uname -m) && \
         -o /usr/local/bin/tailwindcss \
     && chmod +x /usr/local/bin/tailwindcss
 
-# air (hot reload)
-RUN go install github.com/air-verse/air@latest
-
 # Build MCP server binary
 WORKDIR /src/builder
 COPY src/builder/ ./

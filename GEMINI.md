@@ -91,7 +91,7 @@ Subagents must confirm at the start of each task:
 | Layer | Detail |
 |---|---|
 | **Web server** | Go `net/http` via chi in `src/app/main.go`. No Nginx. |
-| **Go app** | Rebuilt automatically by `air` on file changes. |
+| **Go app** | Rebuilt by restarting the container (`docker compose restart app`). |
 | **SQLite** | WAL mode at `/data/app.db` (Docker volume). |
 | **Sessions** | Signed cookie (`gova_session`). No database hit per request. |
 | **Cache** | In-process cache in `cache/cache.go`. Lost on restart — that's fine. |
