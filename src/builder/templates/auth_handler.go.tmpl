@@ -1,0 +1,68 @@
+package handlers
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"gova/app/cache"
+	"gova/app/middleware"
+	"gova/app/models"
+)
+
+func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		email := strings.TrimSpace(body.Email)
+		password := body.Password
+		ip := r.RemoteAddr
+		if i := strings.LastIndex(ip, ":"); i > 0 {
+			ip = ip[:i]
+		}
+
+		userModel := models.NewUserModel(readDB, writeDB, appCache)
+
+		if locked, err := userModel.IsRateLimited(ip); err != nil || locked {
+			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
+			return
+		}
+
+		user, err := userModel.FindByEmail(email)
+		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+			userModel.RecordFailedAttempt(ip)
+			jsonError(w, "Invalid email or password.", http.StatusUnauthorized)
+			return
+		}
+
+		userModel.ClearAttempts(ip)
+		middleware.SetSession(w, user.ID, 24*time.Hour)
+		jsonOK(w, map[string]any{"id": user.ID, "name": user.Name, "email": user.Email})
+	}
+}
+
+func MeGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid := middleware.UserID(r)
+		if uid == 0 {
+			jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		userModel := models.NewUserModel(readDB, writeDB, appCache)
+		user, err := userModel.FindByID(uid)
+		if err != nil {
+			jsonError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		jsonOK(w, map[string]any{"id": user.ID, "name": user.Name, "email": user.Email})
+	}
+}

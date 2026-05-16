@@ -1,0 +1,104 @@
+package models
+
+import (
+	"database/sql"
+	"errors"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"gova/app/cache"
+)
+
+type User struct {
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type UserModel struct {
+	readDB  *sql.DB
+	writeDB *sql.DB
+	cache   *cache.Cache
+}
+
+func NewUserModel(readDB, writeDB *sql.DB, c *cache.Cache) *UserModel {
+	return &UserModel{readDB: readDB, writeDB: writeDB, cache: c}
+}
+
+func (m *UserModel) Create(name, email, password string) (int64, error) {
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, err
+	}
+	res, err := m.writeDB.Exec(
+		"INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
+		name, email, string(hashed),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (m *UserModel) FindByEmail(email string) (*User, error) {
+	row := m.readDB.QueryRow(
+		"SELECT id, name, email, password_hash, created_at FROM users WHERE email = ? LIMIT 1",
+		email,
+	)
+	var u User
+	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.PasswordHash, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("user not found")
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (m *UserModel) FindByID(id int64) (*User, error) {
+	row := m.readDB.QueryRow(
+		"SELECT id, name, email, created_at FROM users WHERE id = ? LIMIT 1",
+		id,
+	)
+	var u User
+	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("user not found")
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (m *UserModel) IsRateLimited(ip string) (bool, error) {
+	var lockedUntil sql.NullTime
+	row := m.readDB.QueryRow("SELECT locked_until FROM rate_limits WHERE ip = ?", ip)
+	if err := row.Scan(&lockedUntil); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if lockedUntil.Valid && time.Now().Before(lockedUntil.Time) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *UserModel) RecordFailedAttempt(ip string) {
+	_, _ = m.writeDB.Exec(`
+		INSERT INTO rate_limits (ip, attempts, locked_until, updated_at)
+		VALUES (?, 1, NULL, CURRENT_TIMESTAMP)
+		ON CONFLICT(ip) DO UPDATE SET
+			attempts = attempts + 1,
+			locked_until = CASE WHEN attempts + 1 >= 5
+				THEN datetime('now', '+15 minutes') ELSE locked_until END,
+			updated_at = CURRENT_TIMESTAMP
+	`, ip)
+}
+
+func (m *UserModel) ClearAttempts(ip string) {
+	_, _ = m.writeDB.Exec("DELETE FROM rate_limits WHERE ip = ?", ip)
+}

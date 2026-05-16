@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -480,17 +482,177 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	defer db.Close()
+
+	ddl := `
+CREATE TABLE IF NOT EXISTS users (
+	id INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	email TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS rate_limits (
+	ip TEXT NOT NULL,
+	attempts INTEGER DEFAULT 0,
+	locked_until DATETIME,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (ip)
+);`
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return errResult(err.Error()), nil
+	}
+
+	results := []string{"Created tables: users, rate_limits"}
+	data := newData("user", nil)
+
+	type fileSpec struct{ tmpl, out string }
+	specs := []fileSpec{
+		{"user_model.go.tmpl", "/src/app/models/User.go"},
+		{"auth_handler.go.tmpl", "/src/app/handlers/auth.go"},
+		{"logout_handler.go.tmpl", "/src/app/handlers/logout.go"},
+		{"login_page.html.tmpl", "/src/app/static/pages/login.html"},
+		{"login.js.tmpl", "/src/app/static/js/login.js"},
+	}
+	for _, spec := range specs {
+		if err := renderToFile(spec.tmpl, spec.out, data); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+spec.out)
+	}
+	results = append(results, "\nRegister routes in main.go:\n"+
+		"  r.Post(\"/api/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
+		"  r.Post(\"/api/auth/logout\", handlers.LogoutPOST())\n"+
+		"  r.Get(\"/api/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
+
+	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	data := newData("user", nil)
+	type fileSpec struct{ tmpl, out string }
+	specs := []fileSpec{
+		{"register_handler.go.tmpl", "/src/app/handlers/register.go"},
+		{"register_page.html.tmpl", "/src/app/static/pages/register.html"},
+		{"register.js.tmpl", "/src/app/static/js/register.js"},
+	}
+	results := []string{}
+	for _, spec := range specs {
+		if err := renderToFile(spec.tmpl, spec.out, data); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+spec.out)
+	}
+	results = append(results, "\nAdd routes in main.go:\n"+
+		"  r.Post(\"/api/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
+	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	page, _ := req.Params.Arguments["page"].(string)
+	apiEndpoint, _ := req.Params.Arguments["api_endpoint"].(string)
+	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
+	title, _ := req.Params.Arguments["title"].(string)
+	submitLabel, _ := req.Params.Arguments["submit_label"].(string)
+	if submitLabel == "" {
+		submitLabel = "Submit"
+	}
+	if !isSafeIdent(page) {
+		return errResult("invalid page name"), nil
+	}
+
+	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/")
+	endpointSlug = strings.Trim(endpointSlug, "/")
+	formName := toPascal(endpointSlug)
+	if formName == "" {
+		formName = toPascal(page) + "Form"
+	}
+
+	fields := parseFields(rawFieldsToStrings(rawFields))
+	data := newData(page, fields)
+	data.APIEndpoint = apiEndpoint
+	data.SubmitLabel = submitLabel
+	data.Title = title
+	data.FormName = formName
+
+	formCode, err := renderToString("js_form.js.tmpl", data)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+
+	// Try pluralized then singular JS filename
+	targetPath := "/src/app/static/js/" + toPlural(page) + ".js"
+	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+		targetPath = "/src/app/static/js/" + page + ".js"
+	}
+
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		return errResult("target JS file not found: " + targetPath), nil
+	}
+
+	marker := "// @inject-forms"
+	if !strings.Contains(string(content), marker) {
+		return errResult("marker '// @inject-forms' not found in " + targetPath + ". Re-add the marker and try again."), nil
+	}
+
+	call := "setup" + formName + "Form(document.getElementById('forms-container'));\n" + marker
+	updated := strings.Replace(string(content), marker, call, 1)
+	updated += "\n\n" + formCode
+
+	if err := os.WriteFile(targetPath, []byte(updated), 0644); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText("Form injected into " + targetPath + "\n\n" + runPatternChecks()), nil
 }
 func handleBuildCSS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	minify, _ := req.Params.Arguments["minify"].(bool)
+	args := []string{
+		"-i", "/src/app/static/css/input.css",
+		"-o", "/src/app/static/css/style.css",
+		"--content", "/src/app/static/**/*.html,/src/app/static/**/*.js",
+	}
+	if minify {
+		args = append(args, "--minify")
+	}
+	cmd := exec.CommandContext(ctx, "/usr/local/bin/tailwindcss", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return errResult(fmt.Sprintf("tailwindcss failed:\n%s", string(out))), nil
+	}
+	return mcp.NewToolResultText("CSS compiled to /src/app/static/css/style.css"), nil
 }
 func handleRunLinter(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	cmd := exec.CommandContext(ctx, "go", "vet", "./...")
+	cmd.Dir = "/src/app"
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return errResult(fmt.Sprintf("go vet failed:\n%s", string(out))), nil
+	}
+
+	bannedPatterns := []struct{ pattern, message string }{
+		{`db\.Exec\(fmt\.Sprintf`, "SQL injection risk: use prepared statements"},
+		{`db\.Query\(fmt\.Sprintf`, "SQL injection risk: use prepared statements"},
+		{`\.innerHTML\s*=`, "XSS risk: use textContent or createElement instead of innerHTML"},
+	}
+
+	violations := []string{}
+	goFiles, _ := filepath.Glob("/src/app/handlers/*.go")
+	jsFiles, _ := filepath.Glob("/src/app/static/js/*.js")
+	for _, file := range append(goFiles, jsFiles...) {
+		content, _ := os.ReadFile(file)
+		for _, bp := range bannedPatterns {
+			re := regexp.MustCompile(bp.pattern)
+			if re.Match(content) {
+				violations = append(violations, fmt.Sprintf("%s: %s", filepath.Base(file), bp.message))
+			}
+		}
+	}
+
+	if len(violations) > 0 {
+		return errResult("Linter found issues:\n" + strings.Join(violations, "\n")), nil
+	}
+	return mcp.NewToolResultText("go vet + pattern checks passed"), nil
 }
