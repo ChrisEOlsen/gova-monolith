@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"embed"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed templates/*
@@ -328,10 +329,60 @@ func main() {
 
 // Tool handler stubs — implemented in subsequent tasks
 func handleInspectApp(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	listDir := func(pattern, label string) string {
+		files, _ := filepath.Glob(pattern)
+		names := make([]string, 0, len(files))
+		for _, f := range files {
+			base := filepath.Base(f)
+			if base == ".gitkeep" {
+				continue
+			}
+			names = append(names, "  "+base)
+		}
+		if len(names) == 0 {
+			return label + "\n  (none)"
+		}
+		return label + "\n" + strings.Join(names, "\n")
+	}
+
+	sections := []string{
+		listDir("/src/app/models/*.go", "Models:"),
+		listDir("/src/app/handlers/*.go", "Handlers:"),
+		listDir("/src/app/static/pages/*.html", "Pages (HTML):"),
+		listDir("/src/app/static/js/*.js", "Pages (JS):"),
+	}
+
+	mainContent, err := os.ReadFile("/src/app/main.go")
+	if err == nil {
+		routeRe := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)"`)
+		matches := routeRe.FindAllStringSubmatch(string(mainContent), -1)
+		routes := make([]string, 0, len(matches))
+		for _, m := range matches {
+			routes = append(routes, "  "+m[1]+" "+m[2])
+		}
+		if len(routes) == 0 {
+			sections = append(sections, "Routes (main.go):\n  (none registered)")
+		} else {
+			sections = append(sections, "Routes (main.go):\n"+strings.Join(routes, "\n"))
+		}
+	}
+
+	return mcp.NewToolResultText(strings.Join(sections, "\n\n")), nil
 }
 func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	query, _ := req.Params.Arguments["query"].(string)
+	if query == "" {
+		return errResult("query is required"), nil
+	}
+	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, query); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText("SQL executed successfully"), nil
 }
 func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return errResult("not yet implemented"), nil
