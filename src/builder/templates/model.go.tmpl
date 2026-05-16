@@ -1,0 +1,90 @@
+package models
+
+import (
+	"database/sql"
+	"encoding/json"
+	"time"
+	"gova/app/cache"
+	{{- if .HasPassword}}
+	"golang.org/x/crypto/bcrypt"
+	{{- end}}
+)
+
+type {{.PascalName}} struct {
+	ID        int64     `json:"id"`
+	{{- range .Fields}}
+	{{toPascal .Name}} {{goType .Type}} `json:"{{.Name}}"`
+	{{- end}}
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type {{.PascalName}}Model struct {
+	readDB  *sql.DB
+	writeDB *sql.DB
+	cache   *cache.Cache
+}
+
+func New{{.PascalName}}Model(readDB, writeDB *sql.DB, c *cache.Cache) *{{.PascalName}}Model {
+	return &{{.PascalName}}Model{readDB: readDB, writeDB: writeDB, cache: c}
+}
+
+func (m *{{.PascalName}}Model) GetAll() ([]{{.PascalName}}, error) {
+	const cacheKey = "{{.PluralName}}:all"
+	if hit, ok := m.cache.Get(cacheKey); ok {
+		var items []{{.PascalName}}
+		if err := json.Unmarshal(hit, &items); err == nil {
+			return items, nil
+		}
+	}
+	rows, err := m.readDB.Query("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []{{.PascalName}}
+	for rows.Next() {
+		var item {{.PascalName}}
+		if err := rows.Scan(&item.ID, {{scanFields .Fields "&item."}}, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if data, err := json.Marshal(items); err == nil {
+		m.cache.Set(cacheKey, data, 5*time.Minute)
+	}
+	return items, nil
+}
+
+func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
+	row := m.readDB.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?", id)
+	var item {{.PascalName}}
+	err := row.Scan(&item.ID, {{scanFields .Fields "&item."}}, &item.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
+	{{- range .Fields}}{{if eq .Type "password"}}
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil { return 0, err }
+	{{end}}{{end}}
+	res, err := m.writeDB.Exec(
+		"INSERT INTO {{.PluralName}} ({{joinNames .Fields}}) VALUES ({{placeholders .Fields}})",
+		{{insertArgs .Fields}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	m.cache.Bust("{{.PluralName}}:")
+	return res.LastInsertId()
+}
+
+func (m *{{.PascalName}}Model) Delete(id int64) error {
+	_, err := m.writeDB.Exec("DELETE FROM {{.PluralName}} WHERE id = ?", id)
+	if err == nil {
+		m.cache.Bust("{{.PluralName}}:")
+	}
+	return err
+}

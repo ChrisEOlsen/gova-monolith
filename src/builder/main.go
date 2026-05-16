@@ -385,7 +385,19 @@ func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	return mcp.NewToolResultText("SQL executed successfully"), nil
 }
 func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	name, _ := req.Params.Arguments["name"].(string)
+	if !isSafeIdent(name) {
+		return errResult("invalid model name: only alphanumeric and underscore allowed"), nil
+	}
+	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
+	fields := parseFields(rawFieldsToStrings(rawFields))
+	data := newData(name, fields)
+
+	outPath := "/src/app/models/" + toPascal(name) + ".go"
+	if err := renderToFile("model.go.tmpl", outPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText("Created: " + outPath), nil
 }
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return errResult("not yet implemented"), nil
