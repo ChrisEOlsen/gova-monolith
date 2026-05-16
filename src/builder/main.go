@@ -400,7 +400,21 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	return mcp.NewToolResultText("Created: " + outPath), nil
 }
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	name, _ := req.Params.Arguments["name"].(string)
+	method, _ := req.Params.Arguments["method"].(string)
+	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
+	if !isSafeIdent(name) {
+		return errResult("invalid handler name"), nil
+	}
+	data := newData(name, nil)
+	data.Method = strings.ToUpper(method)
+	data.AuthRequired = authRequired
+
+	outPath := "/src/app/handlers/" + name + ".go"
+	if err := renderToFile("handler.go.tmpl", outPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText("Created: " + outPath + "\n\nImplement the TODO logic. Wire route in main.go.\n\n" + runPatternChecks()), nil
 }
 func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return errResult("not yet implemented"), nil

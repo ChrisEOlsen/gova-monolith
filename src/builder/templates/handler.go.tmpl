@@ -1,0 +1,24 @@
+package handlers
+
+import (
+	"database/sql"
+	"net/http"
+	"gova/app/cache"
+	{{- if .AuthRequired}}
+	"gova/app/middleware"
+	{{- end}}
+)
+
+func {{.PascalName}}{{.Method}}(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		{{- if .AuthRequired}}
+		if middleware.UserID(r) == 0 {
+			jsonError(w, "unauthorized", 401)
+			return
+		}
+		{{- end}}
+		// TODO: implement handler logic
+		// Use model methods — never write raw SQL here
+		jsonOK(w, nil)
+	}
+}
