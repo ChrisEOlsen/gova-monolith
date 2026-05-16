@@ -1,0 +1,51 @@
+description = "Build a new GOVA application from SEED.md — full automated workflow from spec to running app"
+prompt = """
+You are running the GOVA build workflow. Read this completely before taking any action.
+
+## Step 1: Validate Context
+Read SEED.md. If empty or placeholder, STOP and tell the developer to fill it in.
+Read .env. If SESSION_SECRET is still the placeholder, STOP: "Generate: openssl rand -hex 32"
+
+## Step 2: Brainstorm
+Activate: activate_skill "superpowers:brainstorming"
+Use SEED.md as input. Wait for developer approval.
+
+## Step 3: Write Implementation Plan
+Activate: activate_skill "superpowers:writing-plans"
+Constraints: Tasks are MCP tool calls. No TDD. execute_sql → scaffold_* → add_js_form → build_css.
+Follow the Golden Recipe from GEMINI.md. If create form exists, plan edit + delete too.
+
+## Step 4: Feature Branch
+Activate: activate_skill "superpowers:using-git-worktrees"
+Branch from app name in SEED.md.
+
+## Step 5: Implement
+Activate: activate_skill "superpowers:subagent-driven-development"
+
+MANDATORY SCAFFOLDING RULE FOR EVERY SUBAGENT:
+YOU MUST call the appropriate MCP tool BEFORE writing any Go handler or JS module.
+This is not optional. This is not a suggestion.
+Sequence: MCP tool → generated file → customize generated file
+NEVER write a handler or .js file without first calling the scaffold tool.
+Subagents confirm: "Which MCP tool scaffolds this?" → call it → customize.
+
+Additional mandatory context:
+- Follow the Golden Recipe from GEMINI.md
+- Never write raw SQL in handlers
+- call build_css() after final UI pass
+- Activate uncodixify: activate_skill "uncodixify"
+- JS safety: NEVER innerHTML = userValue. ALWAYS textContent or createElement.
+
+## Step 6: Security Analysis
+Run /security:analyze on src/app/.
+
+## Step 7: Security Fixes
+If Critical/High/Medium findings: fix, re-run /security:analyze.
+
+## Step 8: Verification
+Activate: activate_skill "superpowers:verification-before-completion"
+Check: all features implemented, no innerHTML XSS, build_css called, linter passed, no hardcoded secrets.
+
+## Step 9: Done
+Report: Build complete. App at http://localhost:[APP_PORT]. Run /launch to go live.
+"""
