@@ -55,19 +55,24 @@ Use `superpowers:subagent-driven-development` to execute the plan.
 
 ### Mandatory Scaffolding Rule for every subagent:
 
-**YOU MUST call the appropriate MCP tool BEFORE writing any Go handler or JS module.**
-This is not optional. This is not a suggestion.
+**For feature handlers and JS pages, call the MCP tool FIRST — before writing any code.**
 
 The sequence is always: **MCP tool → generated file → customize generated file**
 
-NEVER:
-- Write a handler from scratch, then call MCP tools
+NEVER (for feature files):
+- Write a feature handler from scratch, then call MCP tools
 - Skip `scaffold_list` because "it's simpler to just write it"
-- Create a `.js` file manually without calling `create_page` or `scaffold_list` first
-- Create any file in `handlers/` or `static/js/` without having just called an MCP tool
+- Create a feature `.js` module without calling `create_page` or `scaffold_list` first
+
+**Exception — infrastructure files are written manually** (created once at init, not per-feature):
+- `middleware/*.go`, `db/`, `cache/` — app-wide plumbing and core infrastructure
+- `handlers/json.go` — shared JSON helpers
+- `static/js/lib/*.js` — shared libs (api.js, auth.js)
+- Shared utility JS modules imported by other modules
 
 Subagents must confirm at the start of each task:
 > "Which MCP tool scaffolds this?" → call it → then customize.
+> If it's infrastructure, document why no scaffold tool applies.
 
 ### Additional mandatory context for every subagent:
 - Follow the Golden Recipe from CLAUDE.md

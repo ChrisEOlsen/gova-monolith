@@ -23,11 +23,11 @@ Branch from app name in SEED.md.
 Activate: activate_skill "superpowers:subagent-driven-development"
 
 MANDATORY SCAFFOLDING RULE FOR EVERY SUBAGENT:
-YOU MUST call the appropriate MCP tool BEFORE writing any Go handler or JS module.
-This is not optional. This is not a suggestion.
+For feature handlers and JS pages, call the MCP tool FIRST — before writing any code.
 Sequence: MCP tool → generated file → customize generated file
-NEVER write a handler or .js file without first calling the scaffold tool.
-Subagents confirm: "Which MCP tool scaffolds this?" → call it → customize.
+NEVER write a feature handler or feature .js module without first calling the scaffold tool.
+Exception — infrastructure files are written manually (not per-feature): middleware/*.go, db/, cache/, handlers/json.go, static/js/lib/*.js, shared utility JS modules.
+Subagents confirm: "Which MCP tool scaffolds this?" → call it → customize. If infrastructure, document why no scaffold applies.
 
 Additional mandatory context:
 - Follow the Golden Recipe from GEMINI.md
