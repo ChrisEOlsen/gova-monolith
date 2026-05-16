@@ -1,0 +1,22 @@
+root = "/src/app"
+tmp_dir = "/tmp/air"
+
+[build]
+  pre_cmd = ["/usr/local/bin/tailwindcss -i ./static/css/input.css -o ./static/css/style.css --minify"]
+  cmd = "go build -o /tmp/air/server ."
+  bin = "/tmp/air/server"
+  include_dir = ["."]
+  include_ext = ["go"]
+  exclude_dir = ["vendor"]
+  delay = 500
+  poll = true
+  poll_interval = 500
+
+[log]
+  time = true
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
