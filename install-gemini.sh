@@ -18,17 +18,21 @@ echo ""
 echo -e "${BOLD}GOVA Monolith — Gemini CLI Setup${NC}"
 echo "======================================"
 
+# ── Prerequisites ──────────────────────────────────────────────────────────────
 step "Checking prerequisites"
-command -v docker >/dev/null 2>&1 || fail "docker not found"
+
+command -v docker >/dev/null 2>&1 || fail "docker not found — install Docker Desktop"
+command -v gemini >/dev/null 2>&1 || fail "gemini not found — install from https://github.com/google-gemini/gemini-cli"
 command -v git    >/dev/null 2>&1 || fail "git not found"
 command -v curl   >/dev/null 2>&1 || fail "curl not found"
-command -v gemini >/dev/null 2>&1 || fail "gemini CLI not found — install from https://github.com/google-gemini/gemini-cli"
-ok "docker, git, curl, gemini present"
+
+ok "docker, gemini, git, curl present"
 
 command -v stripe >/dev/null 2>&1 \
     && ok "stripe CLI present" \
     || warn "stripe CLI not found — install for local webhook testing: https://stripe.com/docs/stripe-cli"
 
+# ── .env setup ──────────────────────────────────────────────────────────────
 step "Setting up .env"
 
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -66,82 +70,83 @@ CURRENT_SECRET=$(grep -E '^SESSION_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2 
 if [ "$CURRENT_SECRET" = "change-me-to-32-random-bytes-before-use" ] || [ -z "$CURRENT_SECRET" ]; then
     SESSION_SECRET=$(openssl rand -hex 32)
     set_env_var "$ENV_FILE" "SESSION_SECRET" "$SESSION_SECRET"
-    ok "SESSION_SECRET generated"
+    ok "SESSION_SECRET generated and written to .env"
 else
     ok "SESSION_SECRET already set"
 fi
 
 CONTAINER_NAME="${APP_NAME}-app-1"
+ok "Container: $CONTAINER_NAME"
 
-step "Configuring .gemini/settings.json"
-
-mkdir -p "$SCRIPT_DIR/.gemini"
-python3 - "$SCRIPT_DIR/.gemini/settings.json" <<'PYEOF'
-import json, sys, os
-
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    settings = {}
-
-settings.setdefault("enabledPlugins", {})
-if "superpowers@claude-plugins-official" not in settings["enabledPlugins"]:
-    settings["enabledPlugins"]["superpowers@claude-plugins-official"] = True
-    print("  + superpowers added to .gemini/settings.json")
-else:
-    print("  - superpowers already registered")
-
-with open(path, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-PYEOF
-
-ok ".gemini/settings.json configured"
-
+# ── Docker build ─────────────────────────────────────────────────────────────
 step "Building Docker image"
+
 cd "$SCRIPT_DIR"
 docker compose up -d --build
+
 ok "Container up"
 
+# ── Verify MCP server binary ─────────────────────────────────────────────────
 step "Verifying MCP server binary"
+
 sleep 2
 if docker exec "$CONTAINER_NAME" ls /usr/local/bin/mcp-server >/dev/null 2>&1; then
-    ok "MCP server binary present"
+    ok "MCP server binary present at /usr/local/bin/mcp-server"
 else
-    fail "MCP server binary not found. Run: docker compose logs app"
+    fail "MCP server binary not found — docker build may have failed. Run: docker compose logs app"
 fi
 
-step "Generating .mcp.json"
+# ── Uncodixify skill ────────────────────────────────────────────────────────
+step "Installing uncodixify skill"
+
+mkdir -p "$HOME/.gemini/skills/uncodixify"
+curl -fsSL "https://raw.githubusercontent.com/cyxzdev/Uncodixfy/main/SKILL.md" \
+    > "$HOME/.gemini/skills/uncodixify/SKILL.md"
+ok "uncodixify skill installed (~/.gemini/skills/uncodixify)"
+
+# ── Superpowers extension ────────────────────────────────────────────────────
+step "Installing superpowers extension"
+
+if [ -d "$HOME/.gemini/extensions/superpowers" ]; then
+    ok "superpowers already installed"
+else
+    gemini extensions install --consent --skip-settings https://github.com/obra/superpowers
+    ok "superpowers extension installed"
+fi
+
+# ── Generate .gemini/settings.json ──────────────────────────────────────────
+step "Generating .gemini/settings.json"
+
 python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" <<'PYEOF'
 import json, sys, os
 
 container   = sys.argv[1]
 project_dir = sys.argv[2]
-mcp_path    = os.path.join(project_dir, ".mcp.json")
+settings_path = os.path.join(project_dir, ".gemini", "settings.json")
 
-config = {
+settings = {
     "mcpServers": {
         "gova-builder": {
             "command": "docker",
             "args": ["exec", "-i", container, "/usr/local/bin/mcp-server"]
         },
         "stripe": {
-            "type": "http",
-            "url": "https://mcp.stripe.com/"
+            "httpUrl": "https://mcp.stripe.com/"
         }
     }
 }
 
-with open(mcp_path, "w") as f:
-    json.dump(config, f, indent=2)
+with open(settings_path, "w") as f:
+    json.dump(settings, f, indent=2)
     f.write("\n")
-print(f"  + .mcp.json → gova-builder + stripe via {container}")
+
+print(f"  + gova-builder MCP → docker exec -i {container} /usr/local/bin/mcp-server")
+print(f"  + stripe MCP → https://mcp.stripe.com/")
 PYEOF
 
-ok ".mcp.json generated"
+ok ".gemini/settings.json generated"
 
+# ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "======================================"
 echo -e "${GREEN}${BOLD}Setup complete!${NC}"
@@ -149,5 +154,6 @@ echo ""
 echo "  1. Fill in SEED.md with your app idea"
 echo "  2. Add API keys to .env if needed"
 echo "  3. Open Gemini CLI:   gemini"
-echo "  4. Start building:    /build"
+echo "  4. Verify MCP tools:  /mcp"
+echo "  5. Start building:    /build"
 echo ""

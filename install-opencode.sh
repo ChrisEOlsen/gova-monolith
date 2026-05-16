@@ -18,17 +18,21 @@ echo ""
 echo -e "${BOLD}GOVA Monolith — OpenCode Setup${NC}"
 echo "======================================"
 
+# ── Prerequisites ──────────────────────────────────────────────────────────────
 step "Checking prerequisites"
-command -v docker   >/dev/null 2>&1 || fail "docker not found"
+
+command -v docker   >/dev/null 2>&1 || fail "docker not found — install Docker"
+command -v opencode >/dev/null 2>&1 || fail "opencode not found — install from https://opencode.ai"
 command -v git      >/dev/null 2>&1 || fail "git not found"
 command -v curl     >/dev/null 2>&1 || fail "curl not found"
-command -v opencode >/dev/null 2>&1 || fail "opencode not found — install from https://opencode.ai"
-ok "docker, git, curl, opencode present"
+
+ok "docker, opencode, git, curl present"
 
 command -v stripe >/dev/null 2>&1 \
     && ok "stripe CLI present" \
     || warn "stripe CLI not found — install for local webhook testing: https://stripe.com/docs/stripe-cli"
 
+# ── .env setup ──────────────────────────────────────────────────────────────
 step "Setting up .env"
 
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -66,63 +70,103 @@ CURRENT_SECRET=$(grep -E '^SESSION_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2 
 if [ "$CURRENT_SECRET" = "change-me-to-32-random-bytes-before-use" ] || [ -z "$CURRENT_SECRET" ]; then
     SESSION_SECRET=$(openssl rand -hex 32)
     set_env_var "$ENV_FILE" "SESSION_SECRET" "$SESSION_SECRET"
-    ok "SESSION_SECRET generated"
+    ok "SESSION_SECRET generated and written to .env"
 else
     ok "SESSION_SECRET already set"
 fi
 
 CONTAINER_NAME="${APP_NAME}-app-1"
+ok "Container: $CONTAINER_NAME"
 
-step "Writing opencode.json"
-cat > "$SCRIPT_DIR/opencode.json" <<JSONEOF
-{
-  "model": "anthropic/claude-opus-4-7"
-}
-JSONEOF
-ok "opencode.json written"
+# ── Uncodixify skill ────────────────────────────────────────────────────────
+step "Installing uncodixify skill"
 
+mkdir -p "$HOME/.claude/skills/uncodixify"
+curl -fsSL "https://raw.githubusercontent.com/cyxzdev/Uncodixfy/main/SKILL.md" \
+    > "$HOME/.claude/skills/uncodixify/SKILL.md"
+ok "uncodixify SKILL.md installed (~/.claude/skills/uncodixify — auto-discovered by OpenCode)"
+
+# ── Docker build ─────────────────────────────────────────────────────────────
 step "Building Docker image"
+
 cd "$SCRIPT_DIR"
 docker compose up -d --build
+
 ok "Container up"
 
+# ── Verify MCP server binary ─────────────────────────────────────────────────
 step "Verifying MCP server binary"
+
 sleep 2
 if docker exec "$CONTAINER_NAME" ls /usr/local/bin/mcp-server >/dev/null 2>&1; then
-    ok "MCP server binary present"
+    ok "MCP server binary present at /usr/local/bin/mcp-server"
 else
-    fail "MCP server binary not found. Run: docker compose logs app"
+    fail "MCP server binary not found — docker build may have failed. Run: docker compose logs app"
 fi
 
-step "Generating .mcp.json"
+# ── Generate opencode.json ───────────────────────────────────────────────────
+step "Generating opencode.json"
+
 python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" <<'PYEOF'
 import json, sys, os
 
 container   = sys.argv[1]
 project_dir = sys.argv[2]
-mcp_path    = os.path.join(project_dir, ".mcp.json")
+config_path = os.path.join(project_dir, "opencode.json")
 
 config = {
-    "mcpServers": {
+    "$schema": "https://opencode.ai/config.json",
+    "plugin": ["superpowers@git+https://github.com/obra/superpowers.git"],
+    "instructions": ["AGENTS.md"],
+    "agent": {
+        "build": {
+            "prompt": "{file:.opencode/commands/build.md}",
+            "description": "Build a new GOVA application from SEED.md"
+        },
+        "launch": {
+            "prompt": "{file:.opencode/commands/launch.md}",
+            "description": "Deploy the GOVA app live via Cloudflare Tunnel"
+        }
+    },
+    "command": {
+        "build": {
+            "description": "Build a new GOVA application from SEED.md",
+            "agent": "build",
+            "template": "Start the GOVA build workflow."
+        },
+        "launch": {
+            "description": "Deploy the GOVA app live via Cloudflare Tunnel",
+            "agent": "launch",
+            "template": "Start the GOVA launch workflow."
+        }
+    },
+    "mcp": {
         "gova-builder": {
-            "command": "docker",
-            "args": ["exec", "-i", container, "/usr/local/bin/mcp-server"]
+            "type": "local",
+            "command": ["docker", "exec", "-i", container, "/usr/local/bin/mcp-server"],
+            "enabled": True
         },
         "stripe": {
-            "type": "http",
-            "url": "https://mcp.stripe.com/"
+            "type": "remote",
+            "url": "https://mcp.stripe.com/",
+            "enabled": True
         }
     }
 }
 
-with open(mcp_path, "w") as f:
+with open(config_path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
-print(f"  + .mcp.json → gova-builder + stripe via {container}")
+
+print(f"  + superpowers plugin")
+print(f"  + gova-builder MCP via {container}")
+print(f"  + stripe MCP via https://mcp.stripe.com/")
+print(f"  + commands: /build, /launch")
 PYEOF
 
-ok ".mcp.json generated"
+ok "opencode.json generated"
 
+# ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 echo "======================================"
 echo -e "${GREEN}${BOLD}Setup complete!${NC}"
@@ -130,5 +174,6 @@ echo ""
 echo "  1. Fill in SEED.md with your app idea"
 echo "  2. Add API keys to .env if needed"
 echo "  3. Open OpenCode:     opencode"
-echo "  4. Start building:    /build"
+echo "  4. Verify MCP tools are connected (check MCP status in OpenCode)"
+echo "  5. Start building:    /build"
 echo ""
