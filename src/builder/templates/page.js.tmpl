@@ -1,0 +1,26 @@
+import { get, post, del } from '/static/js/lib/api.js';
+{{- if .AuthRequired}}
+import { requireAuth } from '/static/js/lib/auth.js';
+{{- end}}
+
+const app = document.getElementById('app');
+
+async function init() {
+  {{- if .AuthRequired}}
+  const user = await requireAuth();
+  if (!user) return;
+  {{- end}}
+  render();
+}
+
+function render() {
+  const p = document.createElement('p');
+  p.className = 'text-sm text-gray-500';
+  p.textContent = 'TODO: implement {{.Title}} page.';
+  app.innerHTML = '';
+  app.appendChild(p);
+}
+
+// @inject-forms
+
+init();

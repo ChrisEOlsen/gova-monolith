@@ -417,7 +417,33 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	return mcp.NewToolResultText("Created: " + outPath + "\n\nImplement the TODO logic. Wire route in main.go.\n\n" + runPatternChecks()), nil
 }
 func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return errResult("not yet implemented"), nil
+	filename, _ := req.Params.Arguments["filename"].(string)
+	title, _ := req.Params.Arguments["title"].(string)
+	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
+	if !isSafeIdent(filename) {
+		return errResult("invalid filename"), nil
+	}
+	data := newData(filename, nil)
+	data.Title = title
+	data.AuthRequired = authRequired
+	data.Method = "GET"
+
+	htmlPath := "/src/app/static/pages/" + filename + ".html"
+	if err := renderToFile("page.html.tmpl", htmlPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	jsPath := "/src/app/static/js/" + filename + ".js"
+	if err := renderToFile("page.js.tmpl", jsPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	handlerPath := "/src/app/handlers/" + filename + ".go"
+	if err := renderToFile("handler.go.tmpl", handlerPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText(
+		"Created: " + htmlPath + "\nCreated: " + jsPath + "\nCreated: " + handlerPath +
+			"\n\nNext: wire route in main.go. Add forms with add_js_form.\n\n" + runPatternChecks(),
+	), nil
 }
 func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return errResult("not yet implemented"), nil

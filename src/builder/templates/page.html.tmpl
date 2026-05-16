@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen flex flex-col">
+  <nav class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <a href="/static/pages/home.html" class="font-semibold text-sm tracking-tight">GOVA</a>
+    <div class="flex gap-6 text-sm text-gray-500">
+      <a href="/static/pages/home.html" class="hover:text-gray-900 transition-colors">Home</a>
+    </div>
+  </nav>
+  <main class="flex-1 px-6 py-8 max-w-4xl mx-auto w-full">
+    <div class="space-y-6">
+      <h1 class="text-2xl font-semibold tracking-tight">{{.Title}}</h1>
+      <div id="app">Loading...</div>
+      <div id="forms-container" class="space-y-4"></div>
+    </div>
+  </main>
+  <footer class="border-t border-gray-100 px-6 py-4 text-xs text-gray-400">
+    Built with GOVA
+  </footer>
+  <script type="module" src="/static/js/{{.Name}}.js"></script>
+</body>
+</html>
