@@ -1,0 +1,14 @@
+.env
+.mcp.json
+.claude/settings.local.json
+.security/
+/tmp/
+*.db
+*.db-shm
+*.db-wal
+src/app/static/css/style.css
+logs/
+opencode.json
+docs/
+.gemini/settings.json
+data/

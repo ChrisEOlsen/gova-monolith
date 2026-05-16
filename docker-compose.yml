@@ -1,0 +1,12 @@
+name: ${APP_NAME:-my-gova-app}
+
+services:
+  app:
+    build: .
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - ./src:/src
+      - ./data:/data
+      - ./logs:/logs
+    env_file: .env
