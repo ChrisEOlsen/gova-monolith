@@ -1,0 +1,52 @@
+function setup{{.FormName}}Form(container) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'border border-gray-200 rounded-lg p-4 bg-white space-y-3 mt-4';
+  {{if .Title}}
+  const titleEl = document.createElement('h3');
+  titleEl.className = 'text-sm font-semibold text-gray-900';
+  titleEl.textContent = '{{.Title}}';
+  wrapper.appendChild(titleEl);
+  {{end}}
+  const form = document.createElement('form');
+  form.className = 'space-y-3';
+  {{range .Fields}}
+  const {{.Name}}Label = document.createElement('label');
+  {{.Name}}Label.className = 'block text-sm font-medium text-gray-700';
+  {{.Name}}Label.textContent = '{{titleCase .Name}}';
+  const {{.Name}}Input = document.createElement('input');
+  {{.Name}}Input.type = '{{if eq .Type "password"}}password{{else}}text{{end}}';
+  {{.Name}}Input.name = '{{.Name}}';
+  {{.Name}}Input.className = 'mt-1 block w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-gray-900';
+  {{.Name}}Input.required = true;
+  form.appendChild({{.Name}}Label);
+  form.appendChild({{.Name}}Input);
+  {{end}}
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'px-4 py-2 bg-gray-900 text-white text-sm rounded hover:bg-gray-700 transition-colors';
+  submitBtn.textContent = '{{.SubmitLabel}}';
+  form.appendChild(submitBtn);
+
+  const errEl = document.createElement('p');
+  errEl.className = 'text-sm text-red-600 hidden';
+  form.appendChild(errEl);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    errEl.classList.add('hidden');
+    const data = { {{range .Fields}}{{.Name}}: {{.Name}}Input.value, {{end}} };
+    const res = await post('{{.APIEndpoint}}', data);
+    submitBtn.disabled = false;
+    if (res.ok) {
+      form.reset();
+      if (typeof loadList === 'function') await loadList();
+    } else {
+      errEl.textContent = res.error ?? 'Something went wrong.';
+      errEl.classList.remove('hidden');
+    }
+  });
+
+  wrapper.appendChild(form);
+  container.appendChild(wrapper);
+}
