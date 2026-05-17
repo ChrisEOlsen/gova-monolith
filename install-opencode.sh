@@ -126,6 +126,10 @@ config = {
         "launch": {
             "prompt": "{file:.opencode/commands/launch.md}",
             "description": "Deploy the GOVA app live via Cloudflare Tunnel"
+        },
+        "security-analyze": {
+            "prompt": "{file:.opencode/commands/security/analyze.md}",
+            "description": "Two-pass security audit on src/app/"
         }
     },
     "command": {
@@ -138,6 +142,11 @@ config = {
             "description": "Deploy the GOVA app live via Cloudflare Tunnel",
             "agent": "launch",
             "template": "Start the GOVA launch workflow."
+        },
+        "security:analyze": {
+            "description": "Two-pass security audit on src/app/",
+            "agent": "security-analyze",
+            "template": "Run the GOVA security audit."
         }
     },
     "mcp": {
@@ -161,7 +170,7 @@ with open(config_path, "w") as f:
 print(f"  + superpowers plugin")
 print(f"  + gova-builder MCP via {container}")
 print(f"  + stripe MCP via https://mcp.stripe.com/")
-print(f"  + commands: /build, /launch")
+print(f"  + commands: /build, /launch, /security:analyze")
 PYEOF
 
 ok "opencode.json generated"
