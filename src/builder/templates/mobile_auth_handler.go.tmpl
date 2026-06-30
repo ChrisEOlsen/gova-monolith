@@ -1,0 +1,124 @@
+package handlers
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"golang.org/x/crypto/bcrypt"
+	"gova/app/cache"
+	"gova/app/models"
+)
+
+// MobileLoginPOST handles POST /api/auth/login_token
+// Body: { "email": "...", "password": "..." }
+// Response: { "ok": true, "data": { "token": "...", "user": { "id": ..., "name": "...", "email": "..." } } }
+// Token is a 64-char hex string; only its SHA-256 hash is stored in mobile_tokens.
+func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			jsonError(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		email := strings.TrimSpace(body.Email)
+		if email == "" || body.Password == "" {
+			jsonError(w, "email and password are required", http.StatusBadRequest)
+			return
+		}
+
+		userModel := models.NewUserModel(readDB, writeDB, appCache)
+		user, err := userModel.FindByEmail(email)
+		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
+			jsonError(w, "invalid email or password", http.StatusUnauthorized)
+			return
+		}
+
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			jsonError(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		token := hex.EncodeToString(raw)
+
+		if _, err := writeDB.ExecContext(r.Context(),
+			"INSERT INTO mobile_tokens (token_hash, user_id) VALUES (?, ?)",
+			mobileHashToken(token), user.ID,
+		); err != nil {
+			jsonError(w, "server error", http.StatusInternalServerError)
+			return
+		}
+
+		jsonOK(w, map[string]any{
+			"token": token,
+			"user":  map[string]any{"id": user.ID, "name": user.Name, "email": user.Email},
+		})
+	}
+}
+
+// MobileLogoutDELETE handles DELETE /api/auth/logout_token
+// Header: Authorization: Bearer <token>
+// Always returns 200 — does not reveal whether the token existed.
+func MobileLogoutDELETE(writeDB *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := mobileBearerToken(r)
+		if token == "" {
+			jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = writeDB.ExecContext(r.Context(),
+			"DELETE FROM mobile_tokens WHERE token_hash = ?",
+			mobileHashToken(token),
+		)
+		jsonOK(w, map[string]string{"status": "logged out"})
+	}
+}
+
+// MobileMeGET handles GET /api/auth/me_token
+// Header: Authorization: Bearer <token>
+// Returns the user associated with the token.
+func MobileMeGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := mobileBearerToken(r)
+		if token == "" {
+			jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var userID int64
+		err := readDB.QueryRowContext(r.Context(),
+			"SELECT user_id FROM mobile_tokens WHERE token_hash = ?",
+			mobileHashToken(token),
+		).Scan(&userID)
+		if err != nil {
+			jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		userModel := models.NewUserModel(readDB, writeDB, appCache)
+		user, err := userModel.FindByID(userID)
+		if err != nil {
+			jsonError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		jsonOK(w, map[string]any{"id": user.ID, "name": user.Name, "email": user.Email})
+	}
+}
+
+func mobileBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+func mobileHashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}

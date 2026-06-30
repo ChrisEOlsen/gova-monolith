@@ -320,6 +320,10 @@ func main() {
 		mcp.WithBoolean("minify", mcp.Description("Minify output")),
 	), handleBuildCSS)
 
+	s.AddTool(mcp.NewTool("scaffold_mobile_auth",
+		mcp.WithDescription("Add token-based auth endpoints to the Go API for mobile clients (iOS, Android). Idempotent — safe to call from multiple mobile repos. Creates mobile_tokens table and handlers/mobile_auth.go with MobileLoginPOST, MobileLogoutDELETE, MobileMeGET. Requires scaffold_auth to have been run first (users table must exist)."),
+	), handleScaffoldMobileAuth)
+
 	s.AddTool(mcp.NewTool("run_linter",
 		mcp.WithDescription("Run 'go vet ./...' and check handlers + JS files for raw SQL, innerHTML XSS patterns. Run after scaffolding to verify generated code."),
 	), handleRunLinter)
@@ -624,6 +628,51 @@ func handleBuildCSS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 	return mcp.NewToolResultText("CSS compiled to /src/app/static/css/style.css"), nil
 }
+func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Step 1: Create mobile_tokens table (idempotent — IF NOT EXISTS)
+	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	defer db.Close()
+
+	ddl := `CREATE TABLE IF NOT EXISTS mobile_tokens (
+	token_hash TEXT PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);`
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return errResult("SQL failed: " + err.Error()), nil
+	}
+
+	results := []string{"Table: mobile_tokens (created or already existed)"}
+
+	// Step 2: Generate handler file — skip if already exists (idempotent)
+	outPath := "/src/app/handlers/mobile_auth.go"
+	if _, statErr := os.Stat(outPath); statErr == nil {
+		results = append(results, "handlers/mobile_auth.go already exists — skipping (idempotent)")
+		return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions()), nil
+	}
+
+	if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
+		return errResult(err.Error()), nil
+	}
+	results = append(results, "Created: "+outPath)
+
+	return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions() + "\n\n" + runPatternChecks()), nil
+}
+
+func mobileAuthRouteInstructions() string {
+	return `
+
+Register routes in main.go (check for duplicates before adding):
+  r.Post("/api/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
+  r.Delete("/api/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
+  r.Get("/api/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
+
+Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
+}
+
 func handleRunLinter(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	cmd := exec.CommandContext(ctx, "go", "vet", "./...")
 	cmd.Dir = "/src/app"
