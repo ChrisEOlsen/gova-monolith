@@ -1,4 +1,4 @@
-FROM golang:1.25
+FROM golang:1.25 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends gcc curl git && rm -rf /var/lib/apt/lists/*
 
@@ -20,8 +20,15 @@ WORKDIR /src/app
 COPY src/app/ ./
 RUN go mod tidy
 
+# ---- app: unchanged runtime, live-builds the Go app on every container start ----
+FROM builder AS app
+WORKDIR /src/app
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-
 EXPOSE 8080
 CMD ["/entrypoint.sh"]
+
+# ---- mcp: nothing but the compiled binary + glibc for the cgo sqlite3 driver ----
+FROM gcr.io/distroless/base-debian12 AS mcp
+COPY --from=builder /usr/local/bin/mcp-server /usr/local/bin/mcp-server
+ENTRYPOINT ["/usr/local/bin/mcp-server"]
