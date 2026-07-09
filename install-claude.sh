@@ -71,8 +71,8 @@ else
     ok "SESSION_SECRET already set"
 fi
 
-CONTAINER_NAME="${APP_NAME}-app-1"
-ok "Container: $CONTAINER_NAME"
+CONTAINER_NAME="${APP_NAME}-mcp-1"
+ok "MCP container: $CONTAINER_NAME"
 
 step "Configuring ~/.claude/settings.json"
 
