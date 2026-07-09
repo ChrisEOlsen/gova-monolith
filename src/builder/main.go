@@ -5,10 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -293,7 +291,7 @@ func main() {
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
-		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module. After: add forms with add_js_form, wire route in main.go, call build_css."),
+		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module. After: add forms with add_js_form, wire route in main.go."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldList)
@@ -315,18 +313,9 @@ func main() {
 		mcp.WithString("submit_label", mcp.Description("Submit button label (default: Submit)")),
 	), handleAddJSForm)
 
-	s.AddTool(mcp.NewTool("build_css",
-		mcp.WithDescription("Compile Tailwind CSS: static/css/input.css → static/css/style.css. Call after editing HTML classes."),
-		mcp.WithBoolean("minify", mcp.Description("Minify output")),
-	), handleBuildCSS)
-
 	s.AddTool(mcp.NewTool("scaffold_mobile_auth",
 		mcp.WithDescription("Add token-based auth endpoints to the Go API for mobile clients (iOS, Android). Idempotent — safe to call from multiple mobile repos. Creates mobile_tokens table and handlers/mobile_auth.go with MobileLoginPOST, MobileLogoutDELETE, MobileMeGET. Requires scaffold_auth to have been run first (users table must exist)."),
 	), handleScaffoldMobileAuth)
-
-	s.AddTool(mcp.NewTool("run_linter",
-		mcp.WithDescription("Run 'go vet ./...' and check handlers + JS files for raw SQL, innerHTML XSS patterns. Run after scaffolding to verify generated code."),
-	), handleRunLinter)
 
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatal(err)
@@ -481,7 +470,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 	return mcp.NewToolResultText(
 		strings.Join(results, "\n") +
-			"\n\nNext: wire GET route in main.go, add POST handler with create_handler, add form with add_js_form, call build_css.\n\n" +
+			"\n\nNext: wire GET route in main.go, add POST handler with create_handler, add form with add_js_form.\n\n" +
 			runPatternChecks(),
 	), nil
 }
@@ -611,23 +600,6 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 	return mcp.NewToolResultText("Form injected into " + targetPath + "\n\n" + runPatternChecks()), nil
 }
-func handleBuildCSS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	minify, _ := req.Params.Arguments["minify"].(bool)
-	args := []string{
-		"-i", "/src/app/static/css/input.css",
-		"-o", "/src/app/static/css/style.css",
-		"--content", "/src/app/static/**/*.html,/src/app/static/**/*.js",
-	}
-	if minify {
-		args = append(args, "--minify")
-	}
-	cmd := exec.CommandContext(ctx, "/usr/local/bin/tailwindcss", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return errResult(fmt.Sprintf("tailwindcss failed:\n%s", string(out))), nil
-	}
-	return mcp.NewToolResultText("CSS compiled to /src/app/static/css/style.css"), nil
-}
 func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Step 1: Create mobile_tokens table (idempotent — IF NOT EXISTS)
 	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
@@ -672,37 +644,4 @@ Register routes in main.go (check for duplicates before adding):
   r.Get("/api/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
 
 Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
-}
-
-func handleRunLinter(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	cmd := exec.CommandContext(ctx, "go", "vet", "./...")
-	cmd.Dir = "/src/app"
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return errResult(fmt.Sprintf("go vet failed:\n%s", string(out))), nil
-	}
-
-	bannedPatterns := []struct{ pattern, message string }{
-		{`db\.Exec\(fmt\.Sprintf`, "SQL injection risk: use prepared statements"},
-		{`db\.Query\(fmt\.Sprintf`, "SQL injection risk: use prepared statements"},
-		{`\.innerHTML\s*=`, "XSS risk: use textContent or createElement instead of innerHTML"},
-	}
-
-	violations := []string{}
-	goFiles, _ := filepath.Glob("/src/app/handlers/*.go")
-	jsFiles, _ := filepath.Glob("/src/app/static/js/*.js")
-	for _, file := range append(goFiles, jsFiles...) {
-		content, _ := os.ReadFile(file)
-		for _, bp := range bannedPatterns {
-			re := regexp.MustCompile(bp.pattern)
-			if re.Match(content) {
-				violations = append(violations, fmt.Sprintf("%s: %s", filepath.Base(file), bp.message))
-			}
-		}
-	}
-
-	if len(violations) > 0 {
-		return errResult("Linter found issues:\n" + strings.Join(violations, "\n")), nil
-	}
-	return mcp.NewToolResultText("go vet + pattern checks passed"), nil
 }
