@@ -8,7 +8,7 @@ A template repository for building AI-driven web applications with the GOVA stac
 
 The AI doesn't write the important code — it calls MCP tools that render deterministic templates. No HTMX, no Alpine.js, no Templ compile step. Go handles JSON API. Vanilla ES modules handle all DOM rendering.
 
-**One container. One binary. One SQLite file.** No Redis, no MySQL, no Nginx, no frontend build step.
+**Two containers, one SQLite file.** `app` runs the Go server; `mcp` runs the builder tools so restarting `app` never disconnects Claude Code. No Redis, no MySQL, no Nginx, no frontend build step.
 
 ## Quick Start
 
