@@ -6,7 +6,7 @@ services:
       context: .
       target: app
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_PORT:-8080}:${APP_PORT:-8080}"
     volumes:
       - ./src:/src
       - ./data:/data

@@ -10,14 +10,18 @@ You are running the GOVA deployment workflow. Only run this after the developer 
 
 Read `.env` and verify:
 
-**1. `TUNNEL_TOKEN`** — must exist and be non-empty.
+**1. `SESSION_SECRET`** — must not be the placeholder.
+If it is still `change-me-to-32-random-bytes-before-use`, STOP: "SESSION_SECRET in .env is still the placeholder value. This is public — anyone who's seen this template can forge session cookies for your live app. Generate a real secret before going live: `openssl rand -hex 32`"
+(This is the same check `/build` runs, repeated here because `/launch` is what actually exposes the app to the public internet — don't rely on `/build` having been the only thing that ran.)
+
+**2. `TUNNEL_TOKEN`** — must exist and be non-empty.
 If missing, STOP: "TUNNEL_TOKEN is missing from .env. Create a tunnel at dash.cloudflare.com → Zero Trust → Tunnels."
 
-**2. `APP_ENV`** — must be `production`.
+**3. `APP_ENV`** — must be `production`.
 If not, update it in `.env` automatically: `APP_ENV=production`
 Then tell the developer: "APP_ENV set to production. Session cookies now require HTTPS. Do not revert for a live deployment."
 
-**3. `APP_URL`** — should be set to the public domain.
+**4. `APP_URL`** — should be set to the public domain.
 If empty, warn (non-blocking): set APP_URL for Stripe webhooks / OAuth callbacks.
 
 ---
@@ -29,13 +33,10 @@ If `docker-compose.yml` does not have a `tunnel:` service, append under `service
 ```yaml
   tunnel:
     image: cloudflare/cloudflared:latest
-    container_name: ${APP_NAME}-tunnel
     command: tunnel run
     restart: unless-stopped
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    networks:
-      - default
 ```
 
 ---
@@ -61,6 +62,6 @@ Expected: `connection registered` or `Registered tunnel connection`.
 
 > **Deployment complete.**
 >
-> Configure domain routing: Zero Trust → Tunnels → [your tunnel] → Public Hostname → `http://app:8080`
+> Configure domain routing: Zero Trust → Tunnels → [your tunnel] → Public Hostname → `http://app:[APP_PORT]`
 >
 > Local access still available at: `http://localhost:[APP_PORT]`
