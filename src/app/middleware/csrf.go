@@ -27,7 +27,14 @@ func CSRF(next http.Handler) http.Handler {
 		// Bearer-token requests (mobile clients) carry no cookies for this
 		// origin, so a forged cross-site request can't replay them the way
 		// it can a session cookie — CSRF doesn't apply to them.
-		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		//
+		// login_token is exempted by path for the same reason even though
+		// it can't carry a Bearer header yet — it's the request that issues
+		// the token, so there's nothing to attach. CSRF's threat model is a
+		// browser auto-attaching credentials to a forged cross-site request;
+		// a native app calling this endpoint directly was never reachable
+		// that way in the first place.
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.URL.Path == "/api/auth/login_token" {
 			next.ServeHTTP(w, r)
 			return
 		}
