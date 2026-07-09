@@ -12,7 +12,7 @@ Use SEED.md as input. Wait for developer approval.
 
 ## Step 3: Write Implementation Plan
 Activate: activate_skill "superpowers:writing-plans"
-Constraints: Tasks are MCP tool calls. No TDD. execute_sql → scaffold_* → add_js_form → build_css.
+Constraints: Tasks are MCP tool calls. No TDD. execute_sql → scaffold_* → add_js_form.
 Follow the Golden Recipe from GEMINI.md. If create form exists, plan edit + delete too.
 
 ## Step 4: Feature Branch
@@ -32,7 +32,7 @@ Subagents confirm: "Which MCP tool scaffolds this?" → call it → customize. I
 Additional mandatory context:
 - Follow the Golden Recipe from GEMINI.md
 - Never write raw SQL in handlers
-- call build_css() after final UI pass
+- CSS recompiles automatically on docker compose restart app — restart once after a JS/HTML-only UI pass with no Go changes
 - Activate uncodixify: activate_skill "uncodixify"
 - JS safety: NEVER innerHTML = userValue. ALWAYS textContent or createElement.
 
@@ -44,7 +44,7 @@ If Critical/High/Medium findings: fix, re-run /security:analyze.
 
 ## Step 8: Verification
 Activate: activate_skill "superpowers:verification-before-completion"
-Check: all features implemented, no innerHTML XSS, build_css called, linter passed, no hardcoded secrets.
+Check: all features implemented, no innerHTML XSS, no hardcoded secrets.
 
 ## Step 9: Done
 Report: Build complete. App at http://localhost:[APP_PORT]. Run /launch to go live.

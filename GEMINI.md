@@ -58,8 +58,9 @@ Subagents must confirm at the start of each task:
 - Edit `.html` files to adjust layout and structure.
 - Keep Go handler logic in `handlers/`. HTML in `static/pages/`. JS in `static/js/`.
 
-### 4. Compile CSS
-- ALWAYS call `build_css()` after adding or changing HTML classes.
+### 4. CSS Compiles Automatically
+- `entrypoint.sh` recompiles Tailwind CSS on every `docker compose restart app` — no MCP step needed.
+- If you changed JS/HTML classes without any Go handler change, restart once to see them: `docker compose restart app`.
 
 ---
 
@@ -117,8 +118,6 @@ Subagents must confirm at the start of each task:
 | `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting |
 | `scaffold_registration` | Registration endpoint — run after `scaffold_auth` |
 | `add_js_form` | Inject creation form into existing `.js` module |
-| `build_css` | After editing HTML classes — compiles Tailwind |
-| `run_linter` | `go vet` + SQL injection + innerHTML XSS checks |
 
 ---
 
@@ -134,8 +133,7 @@ When `scaffold_list` doesn't fit (filtered views, detail pages, dashboards):
 5. edit handlers/    → implement TODO logic using model methods
 6. edit static/js/   → fetch data, render DOM (never innerHTML for user data)
 7. add_js_form       → inject form at // @inject-forms marker
-8. build_css         → compile
-9. run_linter        → verify
+8. docker compose restart app → recompiles CSS, rebuilds the Go binary
 ```
 
 ---

@@ -34,7 +34,7 @@ Use the `superpowers:writing-plans` skill.
 **Mandatory constraints for the plan:**
 - Tasks are **MCP tool calls**, not Go code or JS written by hand
 - Skip TDD — there is no test suite
-- One task per feature: `execute_sql` → `scaffold_*` → `add_js_form` → `build_css`
+- One task per feature: `execute_sql` → `scaffold_*` → `add_js_form`
 - Follow the Golden Recipe from `CLAUDE.md` for every feature
 - If a create form exists, plan edit + delete too (CRUD completeness)
 - Plan steps scaffold first, then customize. Never plan "implement X handler" — always start with the MCP scaffold tool.
@@ -77,7 +77,7 @@ Subagents must confirm at the start of each task:
 ### Additional mandatory context for every subagent:
 - Follow the Golden Recipe from CLAUDE.md
 - Never write raw SQL in handler files — use model methods only
-- Call `build_css()` after the final UI pass
+- CSS recompiles automatically on `docker compose restart app` — restart once after a JS/HTML-only UI pass with no Go changes
 - Use `uncodixify` skill before any UI work
 - Use `context7` MCP for any external API documentation
 - Do not add manual cache calls to model methods — caching is automatic
@@ -122,7 +122,7 @@ Use `superpowers:verification-before-completion`.
 Verify:
 - **Features:** All SEED.md features implemented? Auth-required pages call `requireAuth()`? No placeholder text?
 - **CRUD:** If a create form exists, do edit and delete exist?
-- **Architecture:** Tables via `execute_sql`? Models via `create_model`? No raw SQL in handlers? JS never uses `innerHTML` with user data? `build_css()` called? Linter passed?
+- **Architecture:** Tables via `execute_sql`? Models via `create_model`? No raw SQL in handlers? JS never uses `innerHTML` with user data?
 - **Design:** `uncodixify` invoked? Titles set? Mobile-responsive?
 - **App:** `docker compose logs app` shows no errors?
 - **Environment:** New env vars documented in `env.example`? No hardcoded secrets?
