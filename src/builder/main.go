@@ -639,7 +639,8 @@ func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mc
 	ddl := `CREATE TABLE IF NOT EXISTS mobile_tokens (
 	token_hash TEXT PRIMARY KEY,
 	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	expires_at DATETIME NOT NULL
 );`
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return errResult("SQL failed: " + err.Error()), nil

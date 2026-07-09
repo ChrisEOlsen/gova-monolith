@@ -33,6 +33,7 @@ func CSRF(next http.Handler) http.Handler {
 				Value:    token,
 				Path:     "/",
 				HttpOnly: false,
+				Secure:   secureCookies,
 				SameSite: http.SameSiteStrictMode,
 			})
 		}

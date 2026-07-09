@@ -8,11 +8,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gova/app/cache"
 	"gova/app/models"
 )
+
+// mobileTokenTTL is how long a mobile bearer token stays valid before the
+// client must log in again. Expired tokens are rejected on lookup below.
+const mobileTokenTTL = 30 * 24 * time.Hour
 
 // MobileLoginPOST handles POST /api/auth/login_token
 // Body: { "email": "...", "password": "..." }
@@ -49,8 +54,8 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 		token := hex.EncodeToString(raw)
 
 		if _, err := writeDB.ExecContext(r.Context(),
-			"INSERT INTO mobile_tokens (token_hash, user_id) VALUES (?, ?)",
-			mobileHashToken(token), user.ID,
+			"INSERT INTO mobile_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+			mobileHashToken(token), user.ID, time.Now().Add(mobileTokenTTL),
 		); err != nil {
 			jsonError(w, "server error", http.StatusInternalServerError)
 			return
@@ -93,7 +98,7 @@ func MobileMeGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFun
 		}
 		var userID int64
 		err := readDB.QueryRowContext(r.Context(),
-			"SELECT user_id FROM mobile_tokens WHERE token_hash = ?",
+			"SELECT user_id FROM mobile_tokens WHERE token_hash = ? AND expires_at > CURRENT_TIMESTAMP",
 			mobileHashToken(token),
 		).Scan(&userID)
 		if err != nil {

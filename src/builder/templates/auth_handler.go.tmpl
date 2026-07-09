@@ -13,6 +13,32 @@ import (
 	"gova/app/models"
 )
 
+// dummyHash lets the not-found path pay the same bcrypt cost as the
+// wrong-password path, so response time can't be used to enumerate emails.
+var dummyHash = mustDummyHash()
+
+func mustDummyHash() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// clientIP prefers CF-Connecting-IP (set by Cloudflare's edge and not
+// spoofable through the tunnel, the deploy path this template targets)
+// and falls back to the raw peer address for local/direct deployments.
+func clientIP(r *http.Request) string {
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return ip
+	}
+	ip := r.RemoteAddr
+	if i := strings.LastIndex(ip, ":"); i > 0 {
+		ip = ip[:i]
+	}
+	return ip
+}
+
 func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -25,10 +51,7 @@ func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc 
 		}
 		email := strings.TrimSpace(body.Email)
 		password := body.Password
-		ip := r.RemoteAddr
-		if i := strings.LastIndex(ip, ":"); i > 0 {
-			ip = ip[:i]
-		}
+		ip := clientIP(r)
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
 
@@ -38,7 +61,13 @@ func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc 
 		}
 
 		user, err := userModel.FindByEmail(email)
-		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		if err != nil {
+			bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+			userModel.RecordFailedAttempt(ip)
+			jsonError(w, "Invalid email or password.", http.StatusUnauthorized)
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 			userModel.RecordFailedAttempt(ip)
 			jsonError(w, "Invalid email or password.", http.StatusUnauthorized)
 			return
