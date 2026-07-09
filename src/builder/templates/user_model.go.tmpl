@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -28,6 +29,7 @@ func NewUserModel(readDB, writeDB *sql.DB, c *cache.Cache) *UserModel {
 }
 
 func (m *UserModel) Create(name, email, password string) (int64, error) {
+	email = strings.ToLower(email)
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return 0, err
@@ -43,6 +45,7 @@ func (m *UserModel) Create(name, email, password string) (int64, error) {
 }
 
 func (m *UserModel) FindByEmail(email string) (*User, error) {
+	email = strings.ToLower(email)
 	row := m.readDB.QueryRow(
 		"SELECT id, name, email, password_hash, created_at FROM users WHERE email = ? LIMIT 1",
 		email,

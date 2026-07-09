@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 )
 
 const csrfKey ctxKey = "csrf_token"
@@ -23,6 +24,14 @@ func CSRFToken(r *http.Request) string {
 
 func CSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bearer-token requests (mobile clients) carry no cookies for this
+		// origin, so a forged cross-site request can't replay them the way
+		// it can a session cookie — CSRF doesn't apply to them.
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		token := ""
 		if cookie, err := r.Cookie("csrf_token"); err == nil {
 			token = cookie.Value

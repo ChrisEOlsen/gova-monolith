@@ -38,13 +38,30 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 			jsonError(w, "email and password are required", http.StatusBadRequest)
 			return
 		}
+		ip := clientIP(r)
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
+
+		if locked, err := userModel.IsRateLimited(ip); err != nil || locked {
+			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
+			return
+		}
+
 		user, err := userModel.FindByEmail(email)
-		if err != nil || bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
+		if err != nil {
+			// Pay the same bcrypt cost as the wrong-password path below so
+			// response time can't be used to enumerate emails.
+			bcrypt.CompareHashAndPassword(dummyHash, []byte(body.Password))
+			userModel.RecordFailedAttempt(ip)
 			jsonError(w, "invalid email or password", http.StatusUnauthorized)
 			return
 		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
+			userModel.RecordFailedAttempt(ip)
+			jsonError(w, "invalid email or password", http.StatusUnauthorized)
+			return
+		}
+		userModel.ClearAttempts(ip)
 
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {
