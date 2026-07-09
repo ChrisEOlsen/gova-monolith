@@ -23,4 +23,4 @@
 - [ ] Other: ___
 
 ## Design Notes
-[Any specific UI or UX requirements. Otherwise the AI will follow the Uncodixify standard.]
+[Any specific UI or UX requirements. Otherwise the AI will follow the frontend-design skill's guidance.]

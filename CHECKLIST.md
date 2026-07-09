@@ -2,10 +2,7 @@
 
 ## First-Time Setup
 - [ ] Clone this repo
-- [ ] Run the install script for your harness:
-  - Claude Code: `./install-claude.sh`
-  - OpenCode: `./install-opencode.sh`
-  - Gemini CLI: `./install-gemini.sh`
+- [ ] Run `./install-claude.sh`
 - [ ] Open your AI tool in this directory
 - [ ] Verify MCP tools are connected: `/mcp` → should show `gova-builder` tools
 

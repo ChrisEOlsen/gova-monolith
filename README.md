@@ -20,8 +20,6 @@ cp env.example .env
 | Tool | Install | Context file | Commands |
 |---|---|---|---|
 | **Claude Code** | `./install-claude.sh` | `CLAUDE.md` | `/build`, `/launch` |
-| **Gemini CLI** | `./install-gemini.sh` | `GEMINI.md` | `/build`, `/launch` |
-| **OpenCode** | `./install-opencode.sh` | `AGENTS.md` | `/build`, `/launch` |
 
 Then:
 1. Fill in `SEED.md` with your app idea
