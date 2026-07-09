@@ -21,3 +21,4 @@ services:
       - ./src:/src
       - ./data:/data
     restart: unless-stopped
+    stdin_open: true
