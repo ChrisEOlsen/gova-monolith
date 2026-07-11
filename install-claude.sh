@@ -139,10 +139,10 @@ ok "Container up"
 step "Verifying MCP server binary"
 
 sleep 2
-if docker exec "$CONTAINER_NAME" ls /usr/local/bin/mcp-server >/dev/null 2>&1; then
+if docker exec "$CONTAINER_NAME" /usr/local/bin/mcp-server </dev/null >/dev/null 2>&1; then
     ok "MCP server binary present at /usr/local/bin/mcp-server"
 else
-    fail "MCP server binary not found. Run: docker compose logs app"
+    fail "MCP server binary not found. Run: docker compose logs mcp"
 fi
 
 step "Generating .mcp.json"
