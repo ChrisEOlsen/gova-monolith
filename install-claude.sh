@@ -86,13 +86,6 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     settings = {}
 
-settings.setdefault("enabledPlugins", {})
-if "superpowers@claude-plugins-official" not in settings["enabledPlugins"]:
-    settings["enabledPlugins"]["superpowers@claude-plugins-official"] = True
-    print("  + superpowers@claude-plugins-official added")
-else:
-    print("  - superpowers already registered")
-
 if "mcpServers" in settings:
     del settings["mcpServers"]
     print("  ~ removed stale mcpServers from settings.json")
