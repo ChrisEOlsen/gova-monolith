@@ -103,6 +103,10 @@ Check `src/app/models/feature_name.go`, `handlers/feature_name.go`,
 
 [Exact edits needed — show the code, not a description of the code]
 
+- [ ] **Step 3b: Write a test for the custom behavior** (only if this task hand-writes logic beyond the scaffold — a bespoke `create_handler`/`create_page` stub, or a scaffolded handler customized past its generated behavior; generated CRUD/auth code already has tests from the scaffold call itself)
+
+[Exact test code — same `_test.go` file convention as the generated tests: `httptest` against the handler, `db.OpenTest` for any db-touching test]
+
 - [ ] **Step 4: Restart and verify**
 
 Run: `docker compose restart app`
@@ -131,6 +135,7 @@ Every step must contain the actual content an engineer needs. These are **plan f
 - Exact MCP tool calls with exact arguments
 - DRY, YAGNI, frequent commits
 - Every feature task starts with an MCP scaffold call — never "implement X handler" as a first step
+- Generated CRUD/auth code already has tests from its scaffold call — only plan a test-writing step for hand-customized logic (Step 3b)
 
 ## Self-Review
 
