@@ -1,0 +1,120 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/middleware"
+	"gova/app/models"
+)
+
+const authTestSchema = `
+CREATE TABLE users (
+	id INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	email TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE rate_limits (
+	ip TEXT NOT NULL,
+	attempts INTEGER DEFAULT 0,
+	locked_until DATETIME,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (ip)
+);`
+
+func loginBody(email, password string) *bytes.Buffer {
+	b, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	return bytes.NewBuffer(b)
+}
+
+func TestLoginPOST_Success(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	rec := httptest.NewRecorder()
+
+	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("Set-Cookie") == "" {
+		t.Error("expected gova_session cookie to be set on success")
+	}
+}
+
+func TestLoginPOST_WrongPassword(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "wrong-password"))
+	rec := httptest.NewRecorder()
+
+	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestLoginPOST_RateLimited(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	// Drive the rate limiter directly through its own recording method
+	// rather than 5 real HTTP round trips against a real clock.
+	for i := 0; i < 5; i++ {
+		userModel.RecordFailedAttempt("203.0.113.1")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req.Header.Set("CF-Connecting-IP", "203.0.113.1")
+	rec := httptest.NewRecorder()
+
+	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+}
+
+func TestLoginPOST_CSRFRejectsMismatchedToken(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	protected := middleware.CSRF(LoginPOST(testDB.Read, testDB.Write, appCache))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "server-issued-token"})
+	req.Header.Set("X-CSRF-Token", "attacker-guessed-token")
+	rec := httptest.NewRecorder()
+
+	protected.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}

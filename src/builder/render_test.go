@@ -44,3 +44,8 @@ func TestListHandlerTestTemplate_IsValidGo(t *testing.T) {
 	data := newData("widget", sampleFields())
 	renderAndParse(t, "list_handler_test.go.tmpl", data)
 }
+
+func TestAuthTestTemplate_IsValidGo(t *testing.T) {
+	data := newData("user", nil)
+	renderAndParse(t, "auth_test.go.tmpl", data)
+}

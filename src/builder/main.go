@@ -541,6 +541,7 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 	specs := []fileSpec{
 		{"user_model.go.tmpl", "/src/app/models/User.go"},
 		{"auth_handler.go.tmpl", "/src/app/handlers/auth.go"},
+		{"auth_test.go.tmpl", "/src/app/handlers/auth_test.go"},
 		{"logout_handler.go.tmpl", "/src/app/handlers/logout.go"},
 		{"login_page.html.tmpl", "/src/app/static/pages/login.html"},
 		{"login.js.tmpl", "/src/app/static/js/login.js"},
