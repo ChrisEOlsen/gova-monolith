@@ -33,7 +33,7 @@ Use the `gova-writing-plans` skill.
 
 **Mandatory constraints for the plan:**
 - Tasks are **MCP tool calls**, not Go code or JS written by hand
-- Skip TDD — there is no test suite
+- Scaffold-generated code (models, handlers, auth) already has tests from its scaffold call — only plan a test-writing step for hand-customized logic, per `gova-writing-plans` Step 3b
 - One task per feature: `execute_sql` → `scaffold_*` → `add_js_form`
 - Follow the Golden Recipe from `CLAUDE.md` for every feature
 - If a create form exists, plan edit + delete too (CRUD completeness)

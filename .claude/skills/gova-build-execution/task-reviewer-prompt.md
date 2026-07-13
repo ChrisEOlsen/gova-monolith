@@ -65,8 +65,9 @@ Subagent (general-purpose):
     reporting the pass/fail summary for exactly this code. Do not re-run
     `docker compose restart` or the full suite to confirm their report — if a
     specific line in the diff raises a doubt no existing evidence answers,
-    run only the focused test that answers it (`go test ./handlers/... -run
-    TestName -v`), never the whole suite. A missing or skipped test for
+    run only the focused test that answers it (`docker compose exec app go
+    test ./handlers/... -run TestName -v`), never the whole suite. A missing
+    or skipped test for
     hand-customized logic (see gova-writing-plans Step 3b) is a spec-gap
     finding, not a quality nit — generated scaffold code has tests from its
     scaffold call; hand-written logic without a test does not meet the plan.
