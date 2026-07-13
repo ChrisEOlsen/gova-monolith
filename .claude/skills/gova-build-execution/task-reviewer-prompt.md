@@ -61,11 +61,15 @@ Subagent (general-purpose):
 
     ## Verification
 
-    There is no test suite in this stack. The implementer already restarted
-    the app and reported log/behavior evidence for exactly this code. Do not
-    re-run `docker compose restart` to confirm their report. If reading the
-    code raises a specific doubt no existing evidence answers, name it in
-    your report as something the controller should verify manually.
+    The implementer already restarted the app and ran `go test ./...`,
+    reporting the pass/fail summary for exactly this code. Do not re-run
+    `docker compose restart` or the full suite to confirm their report — if a
+    specific line in the diff raises a doubt no existing evidence answers,
+    run only the focused test that answers it (`go test ./handlers/... -run
+    TestName -v`), never the whole suite. A missing or skipped test for
+    hand-customized logic (see gova-writing-plans Step 3b) is a spec-gap
+    finding, not a quality nit — generated scaffold code has tests from its
+    scaffold call; hand-written logic without a test does not meet the plan.
 
     ## Part 1: Spec Compliance
 

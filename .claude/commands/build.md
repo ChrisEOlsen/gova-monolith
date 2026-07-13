@@ -125,6 +125,7 @@ Verify, with evidence for each:
 - **Features:** All SEED.md features implemented? Auth-required pages call `requireAuth()`? No placeholder text? (Read the files — don't infer from the plan.)
 - **CRUD:** If a create form exists, do edit and delete exist?
 - **Architecture:** Tables via `execute_sql`? Models via `create_model`? No raw SQL in handlers? JS never uses `innerHTML` with user data? (Grep for `innerHTML` and `db.Query`/`db.Exec` outside models/ to confirm, don't assume the rule held.)
+- **Tests:** Run `docker compose exec app go test ./...` now and read the output — all passing? A failing test blocks completion the same as a failing build.
 - **Design:** `frontend-design` invoked? Titles set? Mobile-responsive?
 - **App:** Run `docker compose logs app` now and read the output — no errors?
 - **Environment:** New env vars documented in `env.example`? No hardcoded secrets?

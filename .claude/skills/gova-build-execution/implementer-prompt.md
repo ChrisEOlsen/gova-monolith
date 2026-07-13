@@ -43,7 +43,8 @@ Subagent (general-purpose):
     1. Call the MCP scaffold tool the task brief specifies
     2. Customize the generated files per the task
     3. Verify: `docker compose restart app`, check `docker compose logs app`
-       for errors, confirm the page/endpoint behaves as specified
+       for errors, confirm the page/endpoint behaves as specified, and run
+       `docker compose exec app go test ./...` — all passing?
     4. Commit your work
     5. Self-review (see below)
     6. Report back
@@ -133,7 +134,8 @@ Subagent (general-purpose):
     Write your full report to [REPORT_FILE]:
     - What you implemented (or what you attempted, if blocked)
     - MCP tool calls made (exact tool + args) and what they generated
-    - What you verified and how (restart output, logs, manual check)
+    - What you verified and how (restart output, logs, manual check,
+      `go test` output — paste the pass/fail summary line)
     - Files changed
     - Self-review findings (if any)
     - Any issues or concerns
