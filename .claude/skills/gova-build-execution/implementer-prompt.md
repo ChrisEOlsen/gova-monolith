@@ -54,9 +54,10 @@ Subagent (general-purpose):
     **While you work:** If you encounter something unexpected or unclear, **ask questions**.
     It's always OK to pause and clarify. Don't guess or make assumptions.
 
-    There is no test suite in this stack — verification is: the right MCP
-    tool was called first, the generated files match the task brief, and
-    the app runs clean after restart.
+    Verification is: the right MCP tool was called first, the generated
+    files match the task brief, the app runs clean after restart, and
+    `go test ./...` passes — including the tests the scaffold call itself
+    generated for you (see CLAUDE.md § Mandatory Scaffolding Rule).
 
     ## Code Organization
 
