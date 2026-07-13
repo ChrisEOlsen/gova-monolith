@@ -668,6 +668,12 @@ func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mc
 	}
 	results = append(results, "Created: "+outPath)
 
+	testPath := "/src/app/handlers/mobile_auth_test.go"
+	if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
+		return errResult(err.Error()), nil
+	}
+	results = append(results, "Created: "+testPath)
+
 	return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions() + "\n\n" + runPatternChecks()), nil
 }
 

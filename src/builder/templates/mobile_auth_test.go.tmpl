@@ -1,0 +1,116 @@
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/models"
+)
+
+const mobileAuthTestSchema = authTestSchema + `
+CREATE TABLE mobile_tokens (
+	token_hash TEXT PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	expires_at DATETIME NOT NULL
+);`
+
+func TestMobileLoginPOST_IssuesToken(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	rec := httptest.NewRecorder()
+
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Data.Token) != 64 {
+		t.Errorf("token: got length %d, want 64 (32 bytes hex-encoded)", len(resp.Data.Token))
+	}
+}
+
+func TestMobileMeGET_ValidatesBearerToken(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	loginRec := httptest.NewRecorder()
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(loginRec, loginReq)
+	var loginResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/api/auth/me_token", nil)
+	meReq.Header.Set("Authorization", "Bearer "+loginResp.Data.Token)
+	meRec := httptest.NewRecorder()
+
+	MobileMeGET(testDB.Read, testDB.Write, appCache)(meRec, meReq)
+
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body: %s", meRec.Code, http.StatusOK, meRec.Body.String())
+	}
+}
+
+func TestMobileMeGET_RejectsMissingBearerToken(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me_token", nil)
+	rec := httptest.NewRecorder()
+
+	MobileMeGET(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestMobileLoginPOST_RateLimited(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		userModel.RecordFailedAttempt("203.0.113.5")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req.Header.Set("CF-Connecting-IP", "203.0.113.5")
+	rec := httptest.NewRecorder()
+
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+}

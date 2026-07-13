@@ -54,3 +54,7 @@ func TestRegisterTestTemplate_IsValidGo(t *testing.T) {
 	data := newData("user", nil)
 	renderAndParse(t, "register_test.go.tmpl", data)
 }
+
+func TestMobileAuthTestTemplate_IsValidGo(t *testing.T) {
+	renderAndParse(t, "mobile_auth_test.go.tmpl", TemplateData{})
+}
