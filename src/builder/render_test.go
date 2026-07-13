@@ -49,3 +49,8 @@ func TestAuthTestTemplate_IsValidGo(t *testing.T) {
 	data := newData("user", nil)
 	renderAndParse(t, "auth_test.go.tmpl", data)
 }
+
+func TestRegisterTestTemplate_IsValidGo(t *testing.T) {
+	data := newData("user", nil)
+	renderAndParse(t, "register_test.go.tmpl", data)
+}

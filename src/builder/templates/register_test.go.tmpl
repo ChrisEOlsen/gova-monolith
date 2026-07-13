@@ -1,0 +1,59 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/models"
+)
+
+func registerBody(name, email, password string) *bytes.Buffer {
+	b, _ := json.Marshal(map[string]string{"name": name, "email": email, "password": password})
+	return bytes.NewBuffer(b)
+}
+
+func TestRegisterPOST_Success(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/register", registerBody("Ada", "Ada@Example.com", "correct-horse-battery-staple"))
+	rec := httptest.NewRecorder()
+
+	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	found, err := userModel.FindByEmail("ada@example.com")
+	if err != nil {
+		t.Fatalf("expected user findable by lowercased email: %v", err)
+	}
+	if found.Email != "ada@example.com" {
+		t.Errorf("stored email: got %q, want lowercased %q", found.Email, "ada@example.com")
+	}
+}
+
+func TestRegisterPOST_DuplicateEmailRejected(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/register", registerBody("Ada Two", "ada@example.com", "another-password"))
+	rec := httptest.NewRecorder()
+
+	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}

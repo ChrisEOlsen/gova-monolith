@@ -564,6 +564,7 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 	type fileSpec struct{ tmpl, out string }
 	specs := []fileSpec{
 		{"register_handler.go.tmpl", "/src/app/handlers/register.go"},
+		{"register_test.go.tmpl", "/src/app/handlers/register_test.go"},
 		{"register_page.html.tmpl", "/src/app/static/pages/register.html"},
 		{"register.js.tmpl", "/src/app/static/js/register.js"},
 	}
