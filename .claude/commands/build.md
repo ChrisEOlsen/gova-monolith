@@ -43,7 +43,9 @@ Use the `superpowers:writing-plans` skill.
 
 ## Step 4: Create Feature Branch
 
-Use `superpowers:using-git-worktrees` to create an isolated branch.
+**Do not use `superpowers:using-git-worktrees` or any worktree.** The `gova-builder` MCP server and SQLite db are singleton, path-bound infrastructure (see `CLAUDE.md` § No Git Worktrees for Builds) — a worktree at a different path breaks the MCP container's bind mounts and forces a disruptive container remount + manual `/mcp` reconnect mid-build.
+
+Create a plain feature branch directly in the current checkout instead: `git checkout -b build/<app-name>`.
 
 Derive branch name from app name in SEED.md: "Task Manager" → `build/task-manager`
 

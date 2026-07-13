@@ -29,6 +29,16 @@ Subagents must confirm at the start of each task:
 
 ---
 
+## No Git Worktrees for Builds
+
+**Never use `superpowers:using-git-worktrees` (or any worktree) for gova-monolith build work.** Work directly on a feature branch in the main checkout instead (`git checkout -b build/<app-name>`).
+
+Why: the `gova-builder` MCP server and the SQLite db are singleton, path-bound infrastructure — the `mcp` container's bind mounts (`./src:/src`, `./data:/data` in `docker-compose.yml`) point at one absolute path, set once at `docker compose up`. A worktree lives at a different path, so MCP tool calls issued from inside it would write to the wrong checkout unless the container's mounts are retargeted — and retargeting kills the running `docker exec` stdio session, forcing a disruptive manual `/mcp` reconnect mid-build. Two worktrees can't both point the one container at themselves either, so worktree-level parallelism for MCP scaffold work was never actually achievable here.
+
+Branch isolation (keeping the build off `main` until reviewed) is still worth having — get it via a plain feature branch, not a worktree.
+
+---
+
 ## The Golden Recipe
 
 ### 1. Database First
