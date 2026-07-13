@@ -1,0 +1,39 @@
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/models"
+)
+
+func Test{{.PascalName}}ListGET(t *testing.T) {
+	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
+		id INTEGER PRIMARY KEY,
+		{{- range .Fields}}
+		{{.Name}} {{sqlType .Type}},
+		{{- end}}
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	appCache := cache.New()
+	model := models.New{{.PascalName}}Model(testDB.Read, testDB.Write, appCache)
+	if _, err := model.Create({{testArgs .Fields}}); err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/{{.PluralName}}", nil)
+	rec := httptest.NewRecorder()
+
+	{{.PascalName}}ListGET(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Errorf("body missing ok:true: %s", rec.Body.String())
+	}
+}

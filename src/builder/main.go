@@ -490,6 +490,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		{"model.go.tmpl", "/src/app/models/" + toPascal(name) + ".go"},
 		{"model_test.go.tmpl", "/src/app/models/" + toPascal(name) + "_test.go"},
 		{"list_handler.go.tmpl", "/src/app/handlers/" + name + "_list.go"},
+		{"list_handler_test.go.tmpl", "/src/app/handlers/" + name + "_list_test.go"},
 		{"list_page.html.tmpl", "/src/app/static/pages/" + toPlural(name) + ".html"},
 		{"list_page.js.tmpl", "/src/app/static/js/" + toPlural(name) + ".js"},
 	}
