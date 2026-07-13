@@ -1,0 +1,53 @@
+package models
+
+import (
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+)
+
+func Test{{.PascalName}}Model_CRUD(t *testing.T) {
+	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
+		id INTEGER PRIMARY KEY,
+		{{- range .Fields}}
+		{{.Name}} {{sqlType .Type}},
+		{{- end}}
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+
+	id, err := m.Create({{testArgs .Fields}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("Create returned id 0")
+	}
+
+	found, err := m.Find(id)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if found.ID != id {
+		t.Errorf("Find: got ID %d, want %d", found.ID, id)
+	}
+
+	all, err := m.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("GetAll: got %d items, want 1", len(all))
+	}
+	if all[0].ID != id {
+		t.Errorf("GetAll: got ID %d, want %d", all[0].ID, id)
+	}
+
+	if err := m.Delete(id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := m.Find(id); err == nil {
+		t.Error("Find after Delete: expected error, got nil")
+	}
+}

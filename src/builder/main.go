@@ -99,6 +99,34 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(args, ", ")
 	},
+	"sqlType": func(t string) string {
+		switch t {
+		case "int":
+			return "INTEGER"
+		case "boolean":
+			return "INTEGER"
+		case "float":
+			return "REAL"
+		default:
+			return "TEXT"
+		}
+	},
+	"testArgs": func(fields []Field) string {
+		vals := make([]string, len(fields))
+		for i, f := range fields {
+			switch f.Type {
+			case "int":
+				vals[i] = "int64(1)"
+			case "boolean":
+				vals[i] = "true"
+			case "float":
+				vals[i] = "1.5"
+			default:
+				vals[i] = `"test"`
+			}
+		}
+		return strings.Join(vals, ", ")
+	},
 }
 
 func getTemplate(name string) (*template.Template, error) {
@@ -392,7 +420,11 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	if err := renderToFile("model.go.tmpl", outPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return mcp.NewToolResultText("Created: " + outPath), nil
+	testPath := "/src/app/models/" + toPascal(name) + "_test.go"
+	if err := renderToFile("model_test.go.tmpl", testPath, data); err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText("Created: " + outPath + "\nCreated: " + testPath), nil
 }
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
@@ -456,6 +488,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	type fileSpec struct{ tmpl, out string }
 	specs := []fileSpec{
 		{"model.go.tmpl", "/src/app/models/" + toPascal(name) + ".go"},
+		{"model_test.go.tmpl", "/src/app/models/" + toPascal(name) + "_test.go"},
 		{"list_handler.go.tmpl", "/src/app/handlers/" + name + "_list.go"},
 		{"list_page.html.tmpl", "/src/app/static/pages/" + toPlural(name) + ".html"},
 		{"list_page.js.tmpl", "/src/app/static/js/" + toPlural(name) + ".js"},
