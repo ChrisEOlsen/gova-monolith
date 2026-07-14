@@ -9,7 +9,7 @@ description: Use when you have an approved GOVA design spec and need an implemen
 
 Write a comprehensive implementation plan assuming the engineer has zero context for this codebase. Document everything they need to know: which MCP tool scaffolds each feature, which files get customized after, how to verify it. Give them the whole plan as bite-sized tasks. DRY. YAGNI. Frequent commits.
 
-Assume they are a skilled developer, but know almost nothing about the GOVA toolset. There is no test suite in this stack — verification means calling the right MCP tool, then confirming the generated files and a clean `docker compose restart app`.
+Assume they are a skilled developer, but know almost nothing about the GOVA toolset. Scaffold-generated code (models, handlers, auth) already has tests from its scaffold call — verification means calling the right MCP tool, confirming the generated files, a clean `docker compose restart app`, and `go test ./...` passing. Hand-customized logic gets its own test per Step 3b below.
 
 **Announce at start:** "I'm using the gova-writing-plans skill to create the implementation plan."
 

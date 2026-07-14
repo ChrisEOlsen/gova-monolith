@@ -15,7 +15,7 @@ Execute the plan by dispatching a fresh implementer subagent per task, a task re
 
 **Continuous execution:** Do not pause to check in with your human partner between tasks. Execute all tasks from the plan without stopping. The only reasons to stop are: BLOCKED status you cannot resolve, ambiguity that genuinely prevents progress, or all tasks complete. "Should I continue?" prompts and progress summaries waste their time — they asked you to execute the plan, so execute it.
 
-**No worktree, no test suite:** the branch was already created directly in the main checkout (`git checkout -b build/<app-name>`, no worktree — see CLAUDE.md § No Git Worktrees for Builds). Implementers verify by restarting the app and checking logs/behavior, not by running tests.
+**No worktree:** the branch was already created directly in the main checkout (`git checkout -b build/<app-name>`, no worktree — see CLAUDE.md § No Git Worktrees for Builds). Implementers verify by restarting the app, checking logs/behavior, and running `go test ./...` — scaffold-generated code has tests from its scaffold call; hand-customized logic gets a test per gova-writing-plans Step 3b.
 
 ## The Process
 
