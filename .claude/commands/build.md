@@ -80,7 +80,7 @@ Subagents must confirm at the start of each task:
 - Follow the Golden Recipe from CLAUDE.md
 - Never write raw SQL in handler files — use model methods only
 - CSS recompiles automatically on `docker compose restart app` — restart once after a JS/HTML-only UI pass with no Go changes
-- Use the `frontend-design` skill before any UI work
+- Use the `ui-ux-pro-max` skill before any UI work — this project's stack is `html-tailwind` (vanilla JS + Tailwind, no framework), not React/Vue/etc.; pass `--stack html-tailwind` to its search CLI
 - Use `context7` MCP for any external API documentation
 - Do not add manual cache calls to model methods — caching is automatic
 - JS safety: NEVER use `element.innerHTML = userValue` (XSS). ALWAYS use `element.textContent` for user-supplied text. ALWAYS use `createElement` for structured HTML.
@@ -126,7 +126,7 @@ Verify, with evidence for each:
 - **CRUD:** If a create form exists, do edit and delete exist?
 - **Architecture:** Tables via `execute_sql`? Models via `create_model`? No raw SQL in handlers? JS never uses `innerHTML` with user data? (Grep for `innerHTML` and `db.Query`/`db.Exec` outside models/ to confirm, don't assume the rule held.)
 - **Tests:** Run `docker compose exec app go test ./...` now and read the output — all passing? A failing test blocks completion the same as a failing build.
-- **Design:** `frontend-design` invoked? Titles set? Mobile-responsive?
+- **Design:** `ui-ux-pro-max` invoked? Titles set? Mobile-responsive?
 - **App:** Run `docker compose logs app` now and read the output — no errors?
 - **Environment:** New env vars documented in `env.example`? No hardcoded secrets?
 

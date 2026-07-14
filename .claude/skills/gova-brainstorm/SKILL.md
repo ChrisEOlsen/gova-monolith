@@ -30,7 +30,7 @@ You MUST create a task for each of these items and complete them in order:
 7. **User reviews written spec** — ask user to review the spec file before proceeding
 8. **Transition to implementation** — invoke the `gova-writing-plans` skill to create an implementation plan
 
-**The terminal state is invoking `gova-writing-plans`.** Do NOT invoke `frontend-design` or any other implementation skill yet. The ONLY skill you invoke after brainstorming is `gova-writing-plans`.
+**The terminal state is invoking `gova-writing-plans`.** Do NOT invoke `ui-ux-pro-max` or any other implementation skill yet. The ONLY skill you invoke after brainstorming is `gova-writing-plans`.
 
 ## The Process
 

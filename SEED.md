@@ -23,4 +23,4 @@
 - [ ] Other: ___
 
 ## Design Notes
-[Any specific UI or UX requirements. Otherwise the AI will follow the frontend-design skill's guidance.]
+[Any specific UI or UX requirements. Otherwise the AI will follow the ui-ux-pro-max skill's guidance.]

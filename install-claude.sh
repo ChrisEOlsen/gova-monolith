@@ -90,12 +90,29 @@ if "mcpServers" in settings:
     del settings["mcpServers"]
     print("  ~ removed stale mcpServers from settings.json")
 
+settings.setdefault("extraKnownMarketplaces", {})
+if "ui-ux-pro-max-skill" not in settings["extraKnownMarketplaces"]:
+    settings["extraKnownMarketplaces"]["ui-ux-pro-max-skill"] = {
+        "source": {"source": "github", "repo": "nextlevelbuilder/ui-ux-pro-max-skill"}
+    }
+    print("  + ui-ux-pro-max-skill marketplace added")
+else:
+    print("  - ui-ux-pro-max-skill marketplace already registered")
+
+settings.setdefault("enabledPlugins", {})
+if "ui-ux-pro-max@ui-ux-pro-max-skill" not in settings["enabledPlugins"]:
+    settings["enabledPlugins"]["ui-ux-pro-max@ui-ux-pro-max-skill"] = True
+    print("  + ui-ux-pro-max@ui-ux-pro-max-skill added")
+else:
+    print("  - ui-ux-pro-max already registered")
+
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 PYEOF
 
 ok "~/.claude/settings.json updated"
+warn "ui-ux-pro-max's bundled docs may still be scoped to whatever stack another project last configured it for (its installer bakes a stack choice into its SKILL.md). This repo's build.md always passes --stack html-tailwind explicitly, so this is cosmetic, not a correctness issue — the underlying data/stacks/html-tailwind.csv exists regardless."
 
 step "Registering Stripe MCP"
 
