@@ -21,6 +21,13 @@ import (
 //go:embed templates/*
 var templateFS embed.FS
 
+// sqliteDSN matches src/app/db/db.go's Open() pragmas — WAL mode and a
+// busy timeout — so the builder's DDL connections (execute_sql,
+// scaffold_auth, scaffold_mobile_auth) behave consistently with the app
+// container's live connection instead of using SQLite's rollback-journal
+// default.
+const sqliteDSN = "file:/data/app.db?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_synchronous=NORMAL"
+
 var (
 	tmplCache   = map[string]*template.Template{}
 	tmplCacheMu sync.RWMutex
@@ -397,7 +404,11 @@ func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if query == "" {
 		return errResult("query is required"), nil
 	}
-	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
+	// timeout so DDL here doesn't collide with the app container's live
+	// connection, and so a fresh db file ends up in WAL mode immediately
+	// rather than waiting for the app to connect first.
+	db, err := sql.Open("sqlite3", sqliteDSN)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -509,7 +520,11 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
+	// timeout so DDL here doesn't collide with the app container's live
+	// connection, and so a fresh db file ends up in WAL mode immediately
+	// rather than waiting for the app to connect first.
+	db, err := sql.Open("sqlite3", sqliteDSN)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -638,7 +653,11 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 }
 func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Step 1: Create mobile_tokens table (idempotent — IF NOT EXISTS)
-	db, err := sql.Open("sqlite3", "/data/app.db?_foreign_keys=on")
+	// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
+	// timeout so DDL here doesn't collide with the app container's live
+	// connection, and so a fresh db file ends up in WAL mode immediately
+	// rather than waiting for the app to connect first.
+	db, err := sql.Open("sqlite3", sqliteDSN)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
