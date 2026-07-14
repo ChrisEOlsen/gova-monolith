@@ -74,6 +74,17 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 ---
 
+## Testing
+
+Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above for which ones. Nothing extra to do for that code beyond letting the scaffold call run.
+
+- **Hand-customized logic gets its own test.** If a task customizes a scaffolded handler beyond its generated behavior, or implements a bespoke `create_handler`/`create_page` stub, write a test for it — same `_test.go` convention (`httptest` against the handler, `db.OpenTest` for anything touching the db). See `gova-writing-plans` Step 3b.
+- **Verify:** `docker compose exec app go test ./...` — required alongside `docker compose logs app`, not instead of it.
+- **No JS testing.** Blocked by Critical Constraint 4 (no Node/npm — every standard JS test runner needs Node). Client-side code stays manually/browser-verified.
+- **Test db:** `db.OpenTest(t, schema)` opens a temp-file SQLite db (`t.TempDir()`), never `/data/app.db`.
+
+---
+
 ## Critical Constraints
 
 1. **No Raw SQL in handlers.** Use model methods only.
@@ -117,17 +128,18 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 ## Tool Cheat Sheet
 
-| Tool | When to use |
-|---|---|
-| `inspect_app` | **Before scaffolding** — existing models, handlers, JS pages, routes |
-| `execute_sql` | Create tables — always before `create_model` |
-| `create_model` | Data layer; table must exist first |
-| `create_handler` | Single custom JSON endpoint stub |
-| `create_page` | Full page: `.html` shell + `.js` module + Go handler stub |
-| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js` |
-| `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting |
-| `scaffold_registration` | Registration endpoint — run after `scaffold_auth` |
-| `add_js_form` | Inject creation form into existing `.js` module |
+| Tool | When to use | Generates tests? |
+|---|---|---|
+| `inspect_app` | **Before scaffolding** — existing models, handlers, JS pages, routes | — |
+| `execute_sql` | Create tables — always before `create_model` | — |
+| `create_model` | Data layer; table must exist first | Yes — CRUD roundtrip |
+| `create_handler` | Single custom JSON endpoint stub | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
+| `create_page` | Full page: `.html` shell + `.js` module + Go handler stub | No — same as `create_handler` |
+| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js` | Yes — CRUD + list-handler tests |
+| `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting | Yes — login, rate-limit, CSRF tests |
+| `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
+| `scaffold_mobile_auth` | Token-based auth for mobile clients (iOS/Android) — run after `scaffold_auth` | Yes — token issuance, bearer-auth, rate-limit tests |
+| `add_js_form` | Inject creation form into existing `.js` module | No — JS isn't tested (see Testing below) |
 
 ---
 
