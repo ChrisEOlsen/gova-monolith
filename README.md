@@ -10,6 +10,12 @@ The AI doesn't write the important code — it calls MCP tools that render deter
 
 **Two containers, one SQLite file.** `app` runs the Go server; `mcp` runs the builder tools so restarting `app` never disconnects Claude Code. No Redis, no MySQL, no Nginx, no frontend build step.
 
+## Built In, Not Bolted On
+
+- **Auth, done right by default.** Signed HMAC-SHA256 sessions, double-submit CSRF, bcrypt with timing-safe comparison, rate-limited login (5 attempts / 15 min). Scaffold it once with `scaffold_auth`; the security work is already in the template.
+- **Scaffolds ship with tests.** Every model, handler, and auth endpoint the MCP tools generate comes with a Go test alongside it — CRUD roundtrips, login/CSRF/rate-limit coverage, mobile bearer-token flows. `docker compose exec app go test ./...` runs all of it.
+- **Design intelligence on tap.** The `ui-ux-pro-max` skill brings searchable color palettes, typography pairings, and UX guidelines into the build — no separate design pass required.
+
 ## Quick Start
 
 ```bash
@@ -37,7 +43,7 @@ Then:
 | Database | SQLite (WAL mode) |
 | CSS | Tailwind CLI |
 | Sessions | Signed cookies (HMAC-SHA256) |
-| Cache | In-process sync.Map |
+| Cache | In-process map + mutex |
 | Deployment | Cloudflare Tunnel |
 
 ## Token Efficiency
