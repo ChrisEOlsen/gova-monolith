@@ -42,16 +42,29 @@ func TestTime_UnmarshalJSON_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestTime_UnmarshalJSON_Null(t *testing.T) {
+	var got Time
+	if err := json.Unmarshal([]byte("null"), &got); err != nil {
+		t.Fatalf("Unmarshal(null): %v", err)
+	}
+	if !time.Time(got).IsZero() {
+		t.Errorf("got %v, want zero time", time.Time(got))
+	}
+}
+
 func TestTime_Scan(t *testing.T) {
-	want := time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)
 	cases := []struct {
-		name string
-		src  any
+		name     string
+		src      any
+		wantTime time.Time
 	}{
-		{"time.Time", want},
-		{"string SQLite CURRENT_TIMESTAMP", "2026-07-21 18:45:00"},
-		{"string RFC3339", "2026-07-21T18:45:00Z"},
-		{"bytes RFC3339", []byte("2026-07-21T18:45:00Z")},
+		{"time.Time", time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC), time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"string SQLite CURRENT_TIMESTAMP", "2026-07-21 18:45:00", time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"string RFC3339", "2026-07-21T18:45:00Z", time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"bytes RFC3339", []byte("2026-07-21T18:45:00Z"), time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"string RFC3339Nano", "2026-07-21T18:45:00.000000000Z", time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"string with timezone offset and nanoseconds", "2026-07-21 18:45:00.000000000+00:00", time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)},
+		{"string date only", "2026-07-21", time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -59,8 +72,8 @@ func TestTime_Scan(t *testing.T) {
 			if err := got.Scan(tc.src); err != nil {
 				t.Fatalf("Scan(%v): %v", tc.src, err)
 			}
-			if !time.Time(got).Equal(want) {
-				t.Errorf("got %v, want %v", time.Time(got), want)
+			if !time.Time(got).Equal(tc.wantTime) {
+				t.Errorf("got %v, want %v", time.Time(got), tc.wantTime)
 			}
 		})
 	}
@@ -84,16 +97,35 @@ func TestTime_Scan_Unsupported(t *testing.T) {
 }
 
 func TestTime_Value(t *testing.T) {
-	ts := Time(time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC))
-	v, err := ts.Value()
-	if err != nil {
-		t.Fatalf("Value: %v", err)
+	cases := []struct {
+		name     string
+		ts       Time
+		wantTime time.Time
+	}{
+		{
+			"UTC",
+			Time(time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC)),
+			time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC),
+		},
+		{
+			"non-UTC fixed zone",
+			Time(time.Date(2026, 7, 21, 20, 45, 0, 0, time.FixedZone("CEST", 2*60*60))),
+			time.Date(2026, 7, 21, 18, 45, 0, 0, time.UTC),
+		},
 	}
-	got, ok := v.(time.Time)
-	if !ok {
-		t.Fatalf("Value: got %T, want time.Time", v)
-	}
-	if !got.Equal(time.Time(ts)) {
-		t.Errorf("got %v, want %v", got, time.Time(ts))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := tc.ts.Value()
+			if err != nil {
+				t.Fatalf("Value: %v", err)
+			}
+			got, ok := v.(time.Time)
+			if !ok {
+				t.Fatalf("Value: got %T, want time.Time", v)
+			}
+			if !got.Equal(tc.wantTime) {
+				t.Errorf("got %v, want %v", got, tc.wantTime)
+			}
+		})
 	}
 }

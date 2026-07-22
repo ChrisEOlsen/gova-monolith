@@ -25,6 +25,11 @@ func (t Time) MarshalJSON() ([]byte, error) {
 }
 
 func (t *Time) UnmarshalJSON(b []byte) error {
+	// Handle literal JSON null.
+	if string(b) == "null" {
+		*t = Time{}
+		return nil
+	}
 	s, err := strconv.Unquote(string(b))
 	if err != nil {
 		return fmt.Errorf("models.Time: %w", err)
