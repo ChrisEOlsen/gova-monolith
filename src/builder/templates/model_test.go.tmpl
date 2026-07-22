@@ -11,13 +11,13 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
 		id INTEGER PRIMARY KEY,
 		{{- range .Fields}}
-		{{.Name}} {{sqlType .Type}},
+		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
 		{{- end}}
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
 
-	id, err := m.Create({{testArgs .Fields}})
+{{testDecls .Fields "\t"}}	id, err := m.Create({{testArgs .Fields}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -33,15 +33,34 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Errorf("Find: got ID %d, want %d", found.ID, id)
 	}
 
-	all, err := m.GetAll()
+	items, total, err := m.GetPage(50, 0)
 	if err != nil {
-		t.Fatalf("GetAll: %v", err)
+		t.Fatalf("GetPage: %v", err)
 	}
-	if len(all) != 1 {
-		t.Fatalf("GetAll: got %d items, want 1", len(all))
+	if total != 1 {
+		t.Errorf("GetPage: got total %d, want 1", total)
 	}
-	if all[0].ID != id {
-		t.Errorf("GetAll: got ID %d, want %d", all[0].ID, id)
+	if len(items) != 1 {
+		t.Fatalf("GetPage: got %d items, want 1", len(items))
+	}
+	if items[0].ID != id {
+		t.Errorf("GetPage: got ID %d, want %d", items[0].ID, id)
+	}
+
+	// An offset past the end returns an empty (non-nil) slice, not an error,
+	// and the total still reflects the full table.
+	page2, total2, err := m.GetPage(50, 50)
+	if err != nil {
+		t.Fatalf("GetPage(offset 50): %v", err)
+	}
+	if page2 == nil {
+		t.Error("GetPage past the end returned a nil slice; want empty")
+	}
+	if len(page2) != 0 {
+		t.Errorf("GetPage(offset 50): got %d items, want 0", len(page2))
+	}
+	if total2 != 1 {
+		t.Errorf("GetPage(offset 50): got total %d, want 1", total2)
 	}
 
 	if err := m.Delete(id); err != nil {

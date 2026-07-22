@@ -46,17 +46,15 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(words, " ")
 	},
-	"goType": func(t string) string {
-		switch t {
-		case "int":
-			return "int64"
-		case "boolean":
-			return "bool"
-		case "float":
-			return "float64"
-		default:
-			return "string"
+	"goType": goTypeFor,
+	// goFieldType is goType plus nullability: a nullable column becomes a Go
+	// pointer, which marshals to JSON null and maps to a Swift optional.
+	"goFieldType": func(f Field) string {
+		base := goTypeFor(f.Type)
+		if f.Nullable {
+			return "*" + base
 		}
+		return base
 	},
 	"joinNames": func(fields []Field) string {
 		names := make([]string, len(fields))
@@ -65,12 +63,48 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(names, ", ")
 	},
-	"scanFields": func(fields []Field, prefix string) string {
+	// scanDecls emits the temporaries a row scan needs for nullable columns.
+	"scanDecls": func(fields []Field, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if f.Nullable {
+				lines = append(lines, indent+"var "+f.Name+"Null "+nullTypeFor(f.Type))
+			}
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
+	},
+	// scanTargets emits the &-arguments for rows.Scan, routing nullable
+	// columns through their temporaries.
+	"scanTargets": func(fields []Field, prefix string) string {
 		refs := make([]string, len(fields))
 		for i, f := range fields {
-			refs[i] = prefix + toPascal(f.Name)
+			if f.Nullable {
+				refs[i] = "&" + f.Name + "Null"
+			} else {
+				refs[i] = prefix + toPascal(f.Name)
+			}
 		}
 		return strings.Join(refs, ", ")
+	},
+	// scanAssigns copies valid temporaries back onto the struct as pointers.
+	"scanAssigns": func(fields []Field, target, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if !f.Nullable {
+				continue
+			}
+			lines = append(lines,
+				indent+"if "+f.Name+"Null.Valid {",
+				indent+"\t"+target+toPascal(f.Name)+" = &"+f.Name+"Null."+nullFieldFor(f.Type),
+				indent+"}")
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
 	},
 	"placeholders": func(fields []Field) string {
 		p := make([]string, len(fields))
@@ -82,14 +116,9 @@ var funcMap = template.FuncMap{
 	"createParams": func(fields []Field) string {
 		params := make([]string, len(fields))
 		for i, f := range fields {
-			goT := "string"
-			switch f.Type {
-			case "int":
-				goT = "int64"
-			case "boolean":
-				goT = "bool"
-			case "float":
-				goT = "float64"
+			goT := goTypeFor(f.Type)
+			if f.Nullable {
+				goT = "*" + goT
 			}
 			params[i] = f.Name + " " + goT
 		}
@@ -121,19 +150,89 @@ var funcMap = template.FuncMap{
 	"testArgs": func(fields []Field) string {
 		vals := make([]string, len(fields))
 		for i, f := range fields {
-			switch f.Type {
-			case "int":
-				vals[i] = "int64(1)"
-			case "boolean":
-				vals[i] = "true"
-			case "float":
-				vals[i] = "1.5"
-			default:
-				vals[i] = `"test"`
+			if f.Nullable {
+				// Non-nil pointer so the round-trip actually exercises the
+				// nullable scan path rather than short-circuiting on NULL.
+				vals[i] = "&" + f.Name + "TestVal"
+				continue
 			}
+			vals[i] = testLiteralFor(f.Type)
 		}
 		return strings.Join(vals, ", ")
 	},
+	// testDecls declares the addressable locals testArgs points at.
+	"testDecls": func(fields []Field, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if f.Nullable {
+				lines = append(lines, indent+f.Name+"TestVal := "+testLiteralFor(f.Type))
+			}
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
+	},
+	// sqlNotNull emits the NOT NULL clause for generated fixture schemas so
+	// the test table's shape matches the model the test exercises.
+	"sqlNotNull": func(f Field) string {
+		if f.Nullable {
+			return ""
+		}
+		return " NOT NULL"
+	},
+}
+
+func goTypeFor(t string) string {
+	switch t {
+	case "int":
+		return "int64"
+	case "boolean":
+		return "bool"
+	case "float":
+		return "float64"
+	default:
+		return "string"
+	}
+}
+
+func nullTypeFor(t string) string {
+	switch t {
+	case "int":
+		return "sql.NullInt64"
+	case "boolean":
+		return "sql.NullBool"
+	case "float":
+		return "sql.NullFloat64"
+	default:
+		return "sql.NullString"
+	}
+}
+
+func nullFieldFor(t string) string {
+	switch t {
+	case "int":
+		return "Int64"
+	case "boolean":
+		return "Bool"
+	case "float":
+		return "Float64"
+	default:
+		return "String"
+	}
+}
+
+func testLiteralFor(t string) string {
+	switch t {
+	case "int":
+		return "int64(1)"
+	case "boolean":
+		return "true"
+	case "float":
+		return "1.5"
+	default:
+		return `"test"`
+	}
 }
 
 func getTemplate(name string) (*template.Template, error) {
