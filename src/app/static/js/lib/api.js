@@ -2,10 +2,13 @@ const csrf = () => document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? '';
 
 export async function get(path) {
   const res = await fetch(path, { credentials: 'same-origin' });
-  if (!res.ok && res.status !== 401) {
-    return { ok: false, error: `HTTP ${res.status}` };
+  try {
+    return await res.json();
+  } catch {
+    // Body was not JSON (proxy error page, network truncation) — synthesize
+    // an envelope so callers never have to branch on shape.
+    return { ok: false, error: `HTTP ${res.status}`, code: 'internal' };
   }
-  return res.json();
 }
 
 export async function post(path, body = {}) {
