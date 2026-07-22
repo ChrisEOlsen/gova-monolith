@@ -145,3 +145,67 @@ func TestApplySchema_UnsafeTableNameRejected(t *testing.T) {
 		t.Fatal("expected error for unsafe table name, got nil")
 	}
 }
+
+func TestApplySchema_BooleanNotNullColumn(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE flags (
+		id INTEGER PRIMARY KEY,
+		active BOOLEAN NOT NULL
+	)`)
+	in := []Field{{Name: "active", Type: "boolean"}}
+
+	got, err := applySchemaAt(dsn, "flags", in)
+	if err != nil {
+		t.Fatalf("applySchemaAt: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "active" || got[0].Nullable {
+		t.Errorf("active: got Nullable=%v, want false", got[0].Nullable)
+	}
+}
+
+func TestApplySchema_BooleanNullableColumn(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE flags (
+		id INTEGER PRIMARY KEY,
+		active BOOLEAN
+	)`)
+	in := []Field{{Name: "active", Type: "boolean"}}
+
+	got, err := applySchemaAt(dsn, "flags", in)
+	if err != nil {
+		t.Fatalf("applySchemaAt: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "active" || !got[0].Nullable {
+		t.Errorf("active: got Nullable=%v, want true", got[0].Nullable)
+	}
+}
+
+func TestApplySchema_IntegerBooleanColumn(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE flags (
+		id INTEGER PRIMARY KEY,
+		active INTEGER NOT NULL
+	)`)
+	in := []Field{{Name: "active", Type: "boolean"}}
+
+	got, err := applySchemaAt(dsn, "flags", in)
+	if err != nil {
+		t.Fatalf("applySchemaAt: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "active" || got[0].Nullable {
+		t.Errorf("active: got Nullable=%v, want false", got[0].Nullable)
+	}
+}
+
+func TestApplySchema_BooleanFieldAgainstTextColumnFails(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE flags (
+		id INTEGER PRIMARY KEY,
+		active TEXT NOT NULL
+	)`)
+	in := []Field{{Name: "active", Type: "boolean"}}
+
+	_, err := applySchemaAt(dsn, "flags", in)
+	if err == nil {
+		t.Fatal("expected error for boolean field against TEXT column, got nil")
+	}
+	if !strings.Contains(err.Error(), "active") {
+		t.Errorf("error %q missing field name", err)
+	}
+}

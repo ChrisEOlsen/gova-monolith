@@ -72,6 +72,8 @@ func normalizeSQLType(t string) string {
 		t = t[:i]
 	}
 	switch {
+	case strings.Contains(t, "BOOL"):
+		return "INTEGER"
 	case strings.Contains(t, "INT"):
 		return "INTEGER"
 	case strings.Contains(t, "CHAR"), strings.Contains(t, "TEXT"), strings.Contains(t, "CLOB"):
