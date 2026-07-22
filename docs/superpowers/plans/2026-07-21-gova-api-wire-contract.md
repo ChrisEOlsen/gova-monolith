@@ -969,19 +969,17 @@ func TestApplySchema_NullablePasswordFails(t *testing.T) {
 	}
 }
 
-func TestApplySchema_RejectsReservedModelName(t *testing.T) {
-	dsn := testDSN(t, `CREATE TABLE times (
-		id INTEGER PRIMARY KEY,
-		label TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
+// checkReservedName is a pure lookup — no database involved.
+func TestCheckReservedName(t *testing.T) {
 	if err := checkReservedName("time"); err == nil {
 		t.Error("expected 'time' to be rejected as a model name")
+	}
+	if err := checkReservedName("Time"); err == nil {
+		t.Error("reserved check must be case-insensitive")
 	}
 	if err := checkReservedName("widget"); err != nil {
 		t.Errorf("widget should be allowed, got %v", err)
 	}
-	_ = dsn
 }
 
 func TestApplySchema_UnsafeTableNameRejected(t *testing.T) {
@@ -995,7 +993,7 @@ func TestApplySchema_UnsafeTableNameRejected(t *testing.T) {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd src/builder && go test ./... -run TestApplySchema -v`
+Run: `cd src/builder && go test ./... -run 'TestApplySchema|TestCheckReservedName' -v`
 
 Expected: FAIL — `undefined: applySchemaAt`, `undefined: checkReservedName`, and `Field` has no field `Nullable`.
 
@@ -1172,7 +1170,7 @@ func applySchema(table string, fields []Field) ([]Field, error) {
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `cd src/builder && go test ./... -run 'TestApplySchema' -v`
+Run: `cd src/builder && go test ./... -run 'TestApplySchema|TestCheckReservedName' -v`
 
 Expected: PASS — all eight test functions.
 
@@ -1753,19 +1751,14 @@ func TestQueryInt(t *testing.T) {
 	}
 }
 
-func TestPagingBounds(t *testing.T) {
-	if defaultPageLimit != 50 {
-		t.Errorf("defaultPageLimit: got %d, want 50", defaultPageLimit)
-	}
-	if maxPageLimit != 200 {
-		t.Errorf("maxPageLimit: got %d, want 200", maxPageLimit)
-	}
-}
+// The 50/200 bounds are pinned behaviorally by the clamping cases in
+// TestQueryInt above — asserting the constants against their own literals
+// would restate the definition rather than test it.
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `docker compose exec app go test ./handlers/... -run 'TestQueryInt|TestPagingBounds' -v`
+Run: `docker compose exec app go test ./handlers/... -run TestQueryInt -v`
 
 Expected: FAIL — `undefined: queryInt`, `undefined: defaultPageLimit`.
 
