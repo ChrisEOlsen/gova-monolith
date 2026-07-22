@@ -184,6 +184,9 @@ func toPlural(s string) string {
 type Field struct {
 	Name string
 	Type string
+	// Nullable is filled in by applySchema from the real table's
+	// PRAGMA table_info output — never from the caller's field argument.
+	Nullable bool
 }
 
 func parseFields(raw []string) []Field {
@@ -425,6 +428,13 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
 	fields := parseFields(rawFieldsToStrings(rawFields))
+	if err := checkReservedName(name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	fields, applyErr := applySchema(toPlural(name), fields)
+	if applyErr != nil {
+		return errResult(applyErr.Error()), nil
+	}
 	data := newData(name, fields)
 
 	outPath := "/src/app/models/" + toPascal(name) + ".go"
@@ -492,6 +502,13 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	fields := parseFields(rawFieldsToStrings(rawFields))
 	if len(fields) == 0 {
 		return errResult("at least one field is required"), nil
+	}
+	if err := checkReservedName(name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	fields, applyErr := applySchema(toPlural(name), fields)
+	if applyErr != nil {
+		return errResult(applyErr.Error()), nil
 	}
 	data := newData(name, fields)
 	data.Title = toPascal(toPlural(name))
