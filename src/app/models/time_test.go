@@ -126,6 +126,11 @@ func TestTime_Value(t *testing.T) {
 			if !got.Equal(tc.wantTime) {
 				t.Errorf("got %v, want %v", got, tc.wantTime)
 			}
+			// Verify the returned time is in UTC location, not just the same instant.
+			// This catches regressions if someone removes the .UTC() call from Value().
+			if got.Location() != time.UTC {
+				t.Errorf("got location %v, want UTC", got.Location())
+			}
 		})
 	}
 }
