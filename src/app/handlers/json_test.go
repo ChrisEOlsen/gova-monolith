@@ -86,14 +86,14 @@ func TestJSONError_DerivesCodeFromStatus(t *testing.T) {
 		status int
 		want   string
 	}{
-		{http.StatusUnauthorized, CodeUnauthorized},
-		{http.StatusForbidden, CodeForbidden},
-		{http.StatusNotFound, CodeNotFound},
-		{http.StatusConflict, CodeConflict},
-		{http.StatusUnprocessableEntity, CodeValidationFailed},
-		{http.StatusTooManyRequests, CodeRateLimited},
-		{http.StatusInternalServerError, CodeInternal},
-		{http.StatusTeapot, CodeInternal},
+		{http.StatusUnauthorized, "unauthorized"},
+		{http.StatusForbidden, "forbidden"},
+		{http.StatusNotFound, "not_found"},
+		{http.StatusConflict, "conflict"},
+		{http.StatusUnprocessableEntity, "validation_failed"},
+		{http.StatusTooManyRequests, "rate_limited"},
+		{http.StatusInternalServerError, "internal"},
+		{http.StatusTeapot, "internal"},
 	}
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
@@ -120,8 +120,8 @@ func TestJSONErrorCode_UsesExplicitCode(t *testing.T) {
 	jsonErrorCode(rec, CodeConflict, "already exists", http.StatusBadRequest)
 
 	d := decode(t, rec)
-	if d.Code != CodeConflict {
-		t.Errorf("code: got %q, want %q", d.Code, CodeConflict)
+	if d.Code != "conflict" {
+		t.Errorf("code: got %q, want %q", d.Code, "conflict")
 	}
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d, want 400", rec.Code)
@@ -136,8 +136,8 @@ func TestJSONValidationError(t *testing.T) {
 		t.Errorf("status: got %d, want 422", rec.Code)
 	}
 	d := decode(t, rec)
-	if d.Code != CodeValidationFailed {
-		t.Errorf("code: got %q, want %q", d.Code, CodeValidationFailed)
+	if d.Code != "validation_failed" {
+		t.Errorf("code: got %q, want %q", d.Code, "validation_failed")
 	}
 	if d.Fields["name"] != "required" || d.Fields["email"] != "invalid" {
 		t.Errorf("fields: got %v", d.Fields)
@@ -153,5 +153,29 @@ func TestContentTypeAlwaysJSON(t *testing.T) {
 	jsonOK(rec, nil)
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type: got %q, want application/json", got)
+	}
+}
+
+// TestCodeConstants_PinWireContract ensures the error code constants match
+// their wire contract values. These strings are client-visible and part of
+// the native mobile client's decoding logic — renaming a constant's value
+// without updating this test would silently break the client.
+func TestCodeConstants_PinWireContract(t *testing.T) {
+	cases := []struct {
+		constant string
+		want     string
+	}{
+		{CodeUnauthorized, "unauthorized"},
+		{CodeForbidden, "forbidden"},
+		{CodeNotFound, "not_found"},
+		{CodeConflict, "conflict"},
+		{CodeValidationFailed, "validation_failed"},
+		{CodeRateLimited, "rate_limited"},
+		{CodeInternal, "internal"},
+	}
+	for _, tc := range cases {
+		if tc.constant != tc.want {
+			t.Errorf("constant got %q, want %q", tc.constant, tc.want)
+		}
 	}
 }
