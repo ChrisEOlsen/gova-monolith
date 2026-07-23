@@ -42,7 +42,7 @@ func TestLoginPOST_Success(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	rec := httptest.NewRecorder()
 
 	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -63,7 +63,7 @@ func TestLoginPOST_WrongPassword(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "wrong-password"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "wrong-password"))
 	rec := httptest.NewRecorder()
 
 	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -86,7 +86,7 @@ func TestLoginPOST_RateLimited(t *testing.T) {
 		userModel.RecordFailedAttempt("203.0.113.1")
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	req.Header.Set("CF-Connecting-IP", "203.0.113.1")
 	rec := httptest.NewRecorder()
 
@@ -107,7 +107,7 @@ func TestLoginPOST_CSRFRejectsMismatchedToken(t *testing.T) {
 
 	protected := middleware.CSRF(LoginPOST(testDB.Read, testDB.Write, appCache))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "server-issued-token"})
 	req.Header.Set("X-CSRF-Token", "attacker-guessed-token")
 	rec := httptest.NewRecorder()

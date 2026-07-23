@@ -684,9 +684,9 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		results = append(results, "Created: "+spec.out)
 	}
 	results = append(results, "\nRegister routes in main.go:\n"+
-		"  r.Post(\"/api/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
-		"  r.Post(\"/api/auth/logout\", handlers.LogoutPOST())\n"+
-		"  r.Get(\"/api/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
+		"  r.Post(\"/api/v1/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
+		"  r.Post(\"/api/v1/auth/logout\", handlers.LogoutPOST())\n"+
+		"  r.Get(\"/api/v1/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -707,7 +707,7 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 		results = append(results, "Created: "+spec.out)
 	}
 	results = append(results, "\nAdd routes in main.go:\n"+
-		"  r.Post(\"/api/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
+		"  r.Post(\"/api/v1/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -723,7 +723,11 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return errResult("invalid page name"), nil
 	}
 
-	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/")
+	// Strip the versioned API prefix so the generated form function is named
+	// after the resource, not after "v1".
+	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/v1/")
+	endpointSlug = strings.TrimPrefix(endpointSlug, "/api/")
+	endpointSlug = strings.TrimPrefix(endpointSlug, "/")
 	endpointSlug = strings.Trim(endpointSlug, "/")
 	formName := toPascal(endpointSlug)
 	if formName == "" {
@@ -816,9 +820,9 @@ func mobileAuthRouteInstructions() string {
 	return `
 
 Register routes in main.go (check for duplicates before adding):
-  r.Post("/api/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
-  r.Delete("/api/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
-  r.Get("/api/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
+  r.Post("/api/v1/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
+  r.Delete("/api/v1/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
+  r.Get("/api/v1/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
 
 Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
 }

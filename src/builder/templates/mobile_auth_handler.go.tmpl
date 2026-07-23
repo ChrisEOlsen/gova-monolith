@@ -19,7 +19,7 @@ import (
 // client must log in again. Expired tokens are rejected on lookup below.
 const mobileTokenTTL = 30 * 24 * time.Hour
 
-// MobileLoginPOST handles POST /api/auth/login_token
+// MobileLoginPOST handles POST /api/v1/auth/login_token
 // Body: { "email": "...", "password": "..." }
 // Response: { "ok": true, "data": { "token": "...", "user": { "id": ..., "name": "...", "email": "..." } } }
 // Token is a 64-char hex string; only its SHA-256 hash is stored in mobile_tokens.
@@ -85,7 +85,7 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 	}
 }
 
-// MobileLogoutDELETE handles DELETE /api/auth/logout_token
+// MobileLogoutDELETE handles DELETE /api/v1/auth/logout_token
 // Header: Authorization: Bearer <token>
 // Always returns 200 — does not reveal whether the token existed.
 func MobileLogoutDELETE(writeDB *sql.DB) http.HandlerFunc {
@@ -103,7 +103,7 @@ func MobileLogoutDELETE(writeDB *sql.DB) http.HandlerFunc {
 	}
 }
 
-// MobileMeGET handles GET /api/auth/me_token
+// MobileMeGET handles GET /api/v1/auth/me_token
 // Header: Authorization: Bearer <token>
 // Returns the user associated with the token.
 func MobileMeGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {

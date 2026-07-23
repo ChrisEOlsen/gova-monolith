@@ -21,7 +21,7 @@ func TestRegisterPOST_Success(t *testing.T) {
 	testDB := db.OpenTest(t, authTestSchema)
 	appCache := cache.New()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/register", registerBody("Ada", "Ada@Example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", registerBody("Ada", "Ada@Example.com", "correct-horse-battery-staple"))
 	rec := httptest.NewRecorder()
 
 	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -48,7 +48,7 @@ func TestRegisterPOST_DuplicateEmailRejected(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/register", registerBody("Ada Two", "ada@example.com", "another-password"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", registerBody("Ada Two", "ada@example.com", "another-password"))
 	rec := httptest.NewRecorder()
 
 	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)

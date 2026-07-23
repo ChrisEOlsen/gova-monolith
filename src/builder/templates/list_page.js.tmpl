@@ -6,7 +6,7 @@ import { requireAuth } from '/static/js/lib/auth.js';
 const listEl = document.getElementById('{{.Name}}-list');
 
 export async function loadList() {
-  const res = await get('/api/{{.PluralName}}');
+  const res = await get('/api/v1/{{.PluralName}}');
   if (!res.ok) {
     listEl.textContent = 'Failed to load.';
     return;
