@@ -51,13 +51,9 @@ func main() {
 	r.Get("/api/v1/_version", handlers.VersionGET())
 	r.Get("/api/v1/_manifest", handlers.ManifestGET())
 
-	// Generated API routes registered here by MCP tools.
-	// Use database.Read for GET handlers, database.Write for POST handlers.
-	// Example:
-	//   r.Post("/api/v1/auth/login",  handlers.LoginPOST(database.Read, database.Write, appCache))
-	//   r.Post("/api/v1/auth/logout", handlers.LogoutPOST())
-	//   r.Get("/api/v1/auth/me",      handlers.MeGET(database.Read, database.Write, appCache))
-	// @gova-routes
+	// Generated API routes. Source of truth: api.json -> handlers/routes_gen.go.
+	// Never hand-edit routes here; scaffold tools regenerate RegisterGenerated.
+	handlers.RegisterGenerated(r, database, appCache)
 
 	port := os.Getenv("APP_PORT")
 	if port == "" {
