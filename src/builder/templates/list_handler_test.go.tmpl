@@ -1,9 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"gova/app/cache"
@@ -11,21 +11,29 @@ import (
 	"gova/app/models"
 )
 
-func Test{{.PascalName}}ListGET(t *testing.T) {
-	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
+func {{.Name}}ListSchema() string {
+	return `CREATE TABLE {{.PluralName}} (
 		id INTEGER PRIMARY KEY,
 		{{- range .Fields}}
-		{{.Name}} {{sqlType .Type}},
+		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
 		{{- end}}
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
-	appCache := cache.New()
-	model := models.New{{.PascalName}}Model(testDB.Read, testDB.Write, appCache)
-	if _, err := model.Create({{testArgs .Fields}}); err != nil {
-		t.Fatalf("seed Create: %v", err)
-	}
+	)`
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/{{.PluralName}}", nil)
+type {{.Name}}ListBody struct {
+	OK   bool            `json:"ok"`
+	Data json.RawMessage `json:"data"`
+	Meta struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+		Total  int `json:"total"`
+	} `json:"meta"`
+}
+
+func do{{.PascalName}}ListRequest(t *testing.T, testDB *db.DB, appCache *cache.Cache, target string) {{.Name}}ListBody {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 
 	{{.PascalName}}ListGET(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -33,7 +41,79 @@ func Test{{.PascalName}}ListGET(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"ok":true`) {
-		t.Errorf("body missing ok:true: %s", rec.Body.String())
+	var body {{.Name}}ListBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if !body.OK {
+		t.Errorf("ok: got false, want true")
+	}
+	return body
+}
+
+func Test{{.PascalName}}ListGET(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ListSchema())
+	appCache := cache.New()
+	model := models.New{{.PascalName}}Model(testDB.Read, testDB.Write, appCache)
+{{testDecls .Fields "\t"}}	if _, err := model.Create({{testArgs .Fields}}); err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	body := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}")
+
+	if body.Meta.Total != 1 {
+		t.Errorf("meta.total: got %d, want 1", body.Meta.Total)
+	}
+	if body.Meta.Limit != 50 {
+		t.Errorf("meta.limit: got %d, want 50 (default)", body.Meta.Limit)
+	}
+	if body.Meta.Offset != 0 {
+		t.Errorf("meta.offset: got %d, want 0", body.Meta.Offset)
+	}
+}
+
+// An empty table must serialize data as [] — never null. A strictly-typed
+// client decoding an array fails outright on null.
+func Test{{.PascalName}}ListGET_EmptyRendersArray(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ListSchema())
+	appCache := cache.New()
+
+	body := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}")
+
+	if string(body.Data) != "[]" {
+		t.Errorf("data: got %s, want []", body.Data)
+	}
+	if body.Meta.Total != 0 {
+		t.Errorf("meta.total: got %d, want 0", body.Meta.Total)
+	}
+}
+
+func Test{{.PascalName}}ListGET_ClampsLimit(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ListSchema())
+	appCache := cache.New()
+
+	over := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}?limit=5000")
+	if over.Meta.Limit != 200 {
+		t.Errorf("limit=5000: got meta.limit %d, want 200", over.Meta.Limit)
+	}
+
+	under := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}?limit=0")
+	if under.Meta.Limit != 1 {
+		t.Errorf("limit=0: got meta.limit %d, want 1", under.Meta.Limit)
+	}
+
+	bad := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}?limit=abc")
+	if bad.Meta.Limit != 50 {
+		t.Errorf("limit=abc: got meta.limit %d, want 50 (default)", bad.Meta.Limit)
+	}
+}
+
+func Test{{.PascalName}}ListGET_ClampsOffset(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ListSchema())
+	appCache := cache.New()
+
+	body := do{{.PascalName}}ListRequest(t, testDB, appCache, "/api/v1/{{.PluralName}}?offset=-5")
+	if body.Meta.Offset != 0 {
+		t.Errorf("offset=-5: got meta.offset %d, want 0", body.Meta.Offset)
 	}
 }

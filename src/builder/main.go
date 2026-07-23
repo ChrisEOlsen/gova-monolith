@@ -46,17 +46,15 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(words, " ")
 	},
-	"goType": func(t string) string {
-		switch t {
-		case "int":
-			return "int64"
-		case "boolean":
-			return "bool"
-		case "float":
-			return "float64"
-		default:
-			return "string"
+	"goType": goTypeFor,
+	// goFieldType is goType plus nullability: a nullable column becomes a Go
+	// pointer, which marshals to JSON null and maps to a Swift optional.
+	"goFieldType": func(f Field) string {
+		base := goTypeFor(f.Type)
+		if f.Nullable {
+			return "*" + base
 		}
+		return base
 	},
 	"joinNames": func(fields []Field) string {
 		names := make([]string, len(fields))
@@ -65,12 +63,48 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(names, ", ")
 	},
-	"scanFields": func(fields []Field, prefix string) string {
+	// scanDecls emits the temporaries a row scan needs for nullable columns.
+	"scanDecls": func(fields []Field, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if f.Nullable {
+				lines = append(lines, indent+"var "+f.Name+"Null "+nullTypeFor(f.Type))
+			}
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
+	},
+	// scanTargets emits the &-arguments for rows.Scan, routing nullable
+	// columns through their temporaries.
+	"scanTargets": func(fields []Field, prefix string) string {
 		refs := make([]string, len(fields))
 		for i, f := range fields {
-			refs[i] = prefix + toPascal(f.Name)
+			if f.Nullable {
+				refs[i] = "&" + f.Name + "Null"
+			} else {
+				refs[i] = prefix + toPascal(f.Name)
+			}
 		}
 		return strings.Join(refs, ", ")
+	},
+	// scanAssigns copies valid temporaries back onto the struct as pointers.
+	"scanAssigns": func(fields []Field, target, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if !f.Nullable {
+				continue
+			}
+			lines = append(lines,
+				indent+"if "+f.Name+"Null.Valid {",
+				indent+"\t"+target+toPascal(f.Name)+" = &"+f.Name+"Null."+nullFieldFor(f.Type),
+				indent+"}")
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
 	},
 	"placeholders": func(fields []Field) string {
 		p := make([]string, len(fields))
@@ -82,14 +116,9 @@ var funcMap = template.FuncMap{
 	"createParams": func(fields []Field) string {
 		params := make([]string, len(fields))
 		for i, f := range fields {
-			goT := "string"
-			switch f.Type {
-			case "int":
-				goT = "int64"
-			case "boolean":
-				goT = "bool"
-			case "float":
-				goT = "float64"
+			goT := goTypeFor(f.Type)
+			if f.Nullable {
+				goT = "*" + goT
 			}
 			params[i] = f.Name + " " + goT
 		}
@@ -121,19 +150,89 @@ var funcMap = template.FuncMap{
 	"testArgs": func(fields []Field) string {
 		vals := make([]string, len(fields))
 		for i, f := range fields {
-			switch f.Type {
-			case "int":
-				vals[i] = "int64(1)"
-			case "boolean":
-				vals[i] = "true"
-			case "float":
-				vals[i] = "1.5"
-			default:
-				vals[i] = `"test"`
+			if f.Nullable {
+				// Non-nil pointer so the round-trip actually exercises the
+				// nullable scan path rather than short-circuiting on NULL.
+				vals[i] = "&" + f.Name + "TestVal"
+				continue
 			}
+			vals[i] = testLiteralFor(f.Type)
 		}
 		return strings.Join(vals, ", ")
 	},
+	// testDecls declares the addressable locals testArgs points at.
+	"testDecls": func(fields []Field, indent string) string {
+		lines := []string{}
+		for _, f := range fields {
+			if f.Nullable {
+				lines = append(lines, indent+f.Name+"TestVal := "+testLiteralFor(f.Type))
+			}
+		}
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n"
+	},
+	// sqlNotNull emits the NOT NULL clause for generated fixture schemas so
+	// the test table's shape matches the model the test exercises.
+	"sqlNotNull": func(f Field) string {
+		if f.Nullable {
+			return ""
+		}
+		return " NOT NULL"
+	},
+}
+
+func goTypeFor(t string) string {
+	switch t {
+	case "int":
+		return "int64"
+	case "boolean":
+		return "bool"
+	case "float":
+		return "float64"
+	default:
+		return "string"
+	}
+}
+
+func nullTypeFor(t string) string {
+	switch t {
+	case "int":
+		return "sql.NullInt64"
+	case "boolean":
+		return "sql.NullBool"
+	case "float":
+		return "sql.NullFloat64"
+	default:
+		return "sql.NullString"
+	}
+}
+
+func nullFieldFor(t string) string {
+	switch t {
+	case "int":
+		return "Int64"
+	case "boolean":
+		return "Bool"
+	case "float":
+		return "Float64"
+	default:
+		return "String"
+	}
+}
+
+func testLiteralFor(t string) string {
+	switch t {
+	case "int":
+		return "int64(1)"
+	case "boolean":
+		return "true"
+	case "float":
+		return "1.5"
+	default:
+		return `"test"`
+	}
 }
 
 func getTemplate(name string) (*template.Template, error) {
@@ -184,6 +283,9 @@ func toPlural(s string) string {
 type Field struct {
 	Name string
 	Type string
+	// Nullable is filled in by applySchema from the real table's
+	// PRAGMA table_info output — never from the caller's field argument.
+	Nullable bool
 }
 
 func parseFields(raw []string) []Field {
@@ -306,7 +408,7 @@ func main() {
 	), handleExecuteSQL)
 
 	s.AddTool(mcp.NewTool("create_model",
-		mcp.WithDescription("Generate models/Name.go with GetAll/Find/Create/Update/Delete and 5-min cache. Table must exist first (run execute_sql)."),
+		mcp.WithDescription("Generate models/Name.go with GetPage/Find/Create/Delete and 5-min cache. Table must exist first (run execute_sql)."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Model name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleCreateModel)
@@ -425,6 +527,13 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
 	fields := parseFields(rawFieldsToStrings(rawFields))
+	if err := checkReservedName(name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	fields, applyErr := applySchema(toPlural(name), fields)
+	if applyErr != nil {
+		return errResult(applyErr.Error()), nil
+	}
 	data := newData(name, fields)
 
 	outPath := "/src/app/models/" + toPascal(name) + ".go"
@@ -492,6 +601,13 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	fields := parseFields(rawFieldsToStrings(rawFields))
 	if len(fields) == 0 {
 		return errResult("at least one field is required"), nil
+	}
+	if err := checkReservedName(name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	fields, applyErr := applySchema(toPlural(name), fields)
+	if applyErr != nil {
+		return errResult(applyErr.Error()), nil
 	}
 	data := newData(name, fields)
 	data.Title = toPascal(toPlural(name))
@@ -568,9 +684,9 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		results = append(results, "Created: "+spec.out)
 	}
 	results = append(results, "\nRegister routes in main.go:\n"+
-		"  r.Post(\"/api/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
-		"  r.Post(\"/api/auth/logout\", handlers.LogoutPOST())\n"+
-		"  r.Get(\"/api/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
+		"  r.Post(\"/api/v1/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
+		"  r.Post(\"/api/v1/auth/logout\", handlers.LogoutPOST())\n"+
+		"  r.Get(\"/api/v1/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -591,7 +707,7 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 		results = append(results, "Created: "+spec.out)
 	}
 	results = append(results, "\nAdd routes in main.go:\n"+
-		"  r.Post(\"/api/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
+		"  r.Post(\"/api/v1/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -607,7 +723,11 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return errResult("invalid page name"), nil
 	}
 
-	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/")
+	// Strip the versioned API prefix so the generated form function is named
+	// after the resource, not after "v1".
+	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/v1/")
+	endpointSlug = strings.TrimPrefix(endpointSlug, "/api/")
+	endpointSlug = strings.TrimPrefix(endpointSlug, "/")
 	endpointSlug = strings.Trim(endpointSlug, "/")
 	formName := toPascal(endpointSlug)
 	if formName == "" {
@@ -700,9 +820,9 @@ func mobileAuthRouteInstructions() string {
 	return `
 
 Register routes in main.go (check for duplicates before adding):
-  r.Post("/api/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
-  r.Delete("/api/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
-  r.Get("/api/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
+  r.Post("/api/v1/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
+  r.Delete("/api/v1/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
+  r.Get("/api/v1/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
 
 Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
 }

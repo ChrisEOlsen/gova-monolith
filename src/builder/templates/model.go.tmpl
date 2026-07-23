@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 	"gova/app/cache"
 	{{- if .HasPassword}}
@@ -13,9 +14,16 @@ import (
 type {{.PascalName}} struct {
 	ID        int64     `json:"id"`
 	{{- range .Fields}}
-	{{toPascal .Name}} {{goType .Type}} `json:"{{.Name}}"`
+	{{toPascal .Name}} {{goFieldType .}} `json:"{{.Name}}"`
 	{{- end}}
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt Time `json:"created_at"`
+}
+
+// {{.Name}}Page is the cache payload for a single page of results — items and
+// total travel together so a cache hit does not need a second COUNT query.
+type {{.Name}}Page struct {
+	Items []{{.PascalName}} `json:"items"`
+	Total int               `json:"total"`
 }
 
 type {{.PascalName}}Model struct {
@@ -28,41 +36,59 @@ func New{{.PascalName}}Model(readDB, writeDB *sql.DB, c *cache.Cache) *{{.Pascal
 	return &{{.PascalName}}Model{readDB: readDB, writeDB: writeDB, cache: c}
 }
 
-func (m *{{.PascalName}}Model) GetAll() ([]{{.PascalName}}, error) {
-	const cacheKey = "{{.PluralName}}:all"
+// GetPage returns one window of rows plus the unfiltered total.
+//
+// Callers clamp limit and offset before calling — see handlers/paging.go.
+func (m *{{.PascalName}}Model) GetPage(limit, offset int) ([]{{.PascalName}}, int, error) {
+	cacheKey := fmt.Sprintf("{{.PluralName}}:page:%d:%d", limit, offset)
 	if hit, ok := m.cache.Get(cacheKey); ok {
-		var items []{{.PascalName}}
-		if err := json.Unmarshal(hit, &items); err == nil {
-			return items, nil
+		var page {{.Name}}Page
+		if err := json.Unmarshal(hit, &page); err == nil {
+			return page.Items, page.Total, nil
 		}
 	}
-	rows, err := m.readDB.Query("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} ORDER BY created_at DESC")
+
+	var total int
+	if err := m.readDB.QueryRow("SELECT COUNT(*) FROM {{.PluralName}}").Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := m.readDB.Query(
+		"SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+		limit, offset,
+	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	var items []{{.PascalName}}
+
+	// Initialized non-nil: a nil slice marshals as JSON null, which breaks
+	// strictly-typed clients decoding an array.
+	items := []{{.PascalName}}{}
 	for rows.Next() {
 		var item {{.PascalName}}
-		if err := rows.Scan(&item.ID, {{scanFields .Fields "&item."}}, &item.CreatedAt); err != nil {
-			return nil, err
+{{scanDecls .Fields "\t\t"}}		if err := rows.Scan(&item.ID, {{scanTargets .Fields "&item."}}, &item.CreatedAt); err != nil {
+			return nil, 0, err
 		}
-		items = append(items, item)
+{{scanAssigns .Fields "item." "\t\t"}}		items = append(items, item)
 	}
-	if data, err := json.Marshal(items); err == nil {
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	if data, err := json.Marshal({{.Name}}Page{Items: items, Total: total}); err == nil {
 		m.cache.Set(cacheKey, data, 5*time.Minute)
 	}
-	return items, nil
+	return items, total, nil
 }
 
 func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
 	row := m.readDB.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?", id)
 	var item {{.PascalName}}
-	err := row.Scan(&item.ID, {{scanFields .Fields "&item."}}, &item.CreatedAt)
-	if err != nil {
+{{scanDecls .Fields "\t"}}	if err := row.Scan(&item.ID, {{scanTargets .Fields "&item."}}, &item.CreatedAt); err != nil {
 		return nil, err
 	}
-	return &item, nil
+{{scanAssigns .Fields "item." "\t"}}	return &item, nil
 }
 
 func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
@@ -70,6 +96,8 @@ func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil { return 0, err }
 	{{end}}{{end}}
+	// A nil pointer binds to SQL NULL directly — no sql.Null* wrapper needed
+	// on the insert path.
 	res, err := m.writeDB.Exec(
 		"INSERT INTO {{.PluralName}} ({{joinNames .Fields}}) VALUES ({{placeholders .Fields}})",
 		{{insertArgs .Fields}},

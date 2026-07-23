@@ -47,12 +47,16 @@ func main() {
 	// Pages
 	r.Get("/", handlers.HomeGET())
 
-	// Generated API routes registered here by MCP tools
-	// Use database.Read for GET handlers, database.Write for POST handlers
+	// API
+	r.Get("/api/v1/_version", handlers.VersionGET())
+
+	// Generated API routes registered here by MCP tools.
+	// Use database.Read for GET handlers, database.Write for POST handlers.
 	// Example:
-	//   r.Post("/api/auth/login",  handlers.LoginPOST(database.Read, database.Write, appCache))
-	//   r.Post("/api/auth/logout", handlers.LogoutPOST())
-	//   r.Get("/api/auth/me",      handlers.MeGET(database.Read, database.Write, appCache))
+	//   r.Post("/api/v1/auth/login",  handlers.LoginPOST(database.Read, database.Write, appCache))
+	//   r.Post("/api/v1/auth/logout", handlers.LogoutPOST())
+	//   r.Get("/api/v1/auth/me",      handlers.MeGET(database.Read, database.Write, appCache))
+	// @gova-routes
 
 	port := os.Getenv("APP_PORT")
 	if port == "" {

@@ -27,7 +27,7 @@ func TestMobileLoginPOST_IssuesToken(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	rec := httptest.NewRecorder()
 
 	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -56,7 +56,7 @@ func TestMobileMeGET_ValidatesBearerToken(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	loginRec := httptest.NewRecorder()
 	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(loginRec, loginReq)
 	var loginResp struct {
@@ -68,7 +68,7 @@ func TestMobileMeGET_ValidatesBearerToken(t *testing.T) {
 		t.Fatalf("decode login response: %v", err)
 	}
 
-	meReq := httptest.NewRequest(http.MethodGet, "/api/auth/me_token", nil)
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil)
 	meReq.Header.Set("Authorization", "Bearer "+loginResp.Data.Token)
 	meRec := httptest.NewRecorder()
 
@@ -83,7 +83,7 @@ func TestMobileMeGET_RejectsMissingBearerToken(t *testing.T) {
 	testDB := db.OpenTest(t, mobileAuthTestSchema)
 	appCache := cache.New()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/me_token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil)
 	rec := httptest.NewRecorder()
 
 	MobileMeGET(testDB.Read, testDB.Write, appCache)(rec, req)
@@ -104,7 +104,7 @@ func TestMobileLoginPOST_RateLimited(t *testing.T) {
 		userModel.RecordFailedAttempt("203.0.113.5")
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
 	req.Header.Set("CF-Connecting-IP", "203.0.113.5")
 	rec := httptest.NewRecorder()
 

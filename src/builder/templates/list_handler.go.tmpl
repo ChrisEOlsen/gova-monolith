@@ -7,14 +7,19 @@ import (
 	"gova/app/models"
 )
 
+// {{.PascalName}}ListGET handles GET /api/v1/{{.PluralName}}
+// Query: ?limit=<1..200, default 50>&offset=<0.., default 0>
 func {{.PascalName}}ListGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		limit := queryInt(r, "limit", defaultPageLimit, 1, maxPageLimit)
+		offset := queryInt(r, "offset", 0, 0, maxPageOffset)
+
 		model := models.New{{.PascalName}}Model(readDB, writeDB, appCache)
-		items, err := model.GetAll()
+		items, total, err := model.GetPage(limit, offset)
 		if err != nil {
 			jsonError(w, "failed to load", 500)
 			return
 		}
-		jsonOK(w, items)
+		jsonList(w, items, Meta{Limit: limit, Offset: offset, Total: total})
 	}
 }
