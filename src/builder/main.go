@@ -361,6 +361,20 @@ func renderToString(tmplName string, data TemplateData) (string, error) {
 	return buf.String(), nil
 }
 
+// renderNamedToString renders tmplName with an arbitrary payload, for
+// templates (like routes_gen.go.tmpl) whose data shape isn't TemplateData.
+func renderNamedToString(tmplName string, data any) (string, error) {
+	tmpl, err := getTemplate(tmplName)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 func rawFieldsToStrings(raw []interface{}) []string {
 	s := make([]string, len(raw))
 	for i, v := range raw {

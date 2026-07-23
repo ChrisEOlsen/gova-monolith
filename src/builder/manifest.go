@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -124,4 +126,57 @@ func writeManifestAt(path string, m *Manifest, now time.Time) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// callExpr builds the handler constructor call from the endpoint's deps, in
+// argument order. read->database.Read, write->database.Write, cache->appCache.
+func callExpr(e Endpoint) string {
+	args := make([]string, 0, len(e.Deps))
+	for _, d := range e.Deps {
+		switch d {
+		case "read":
+			args = append(args, "database.Read")
+		case "write":
+			args = append(args, "database.Write")
+		case "cache":
+			args = append(args, "appCache")
+		}
+	}
+	return e.Handler + "(" + strings.Join(args, ", ") + ")"
+}
+
+// chiMethod maps an HTTP method to the chi router method name (Get, Post, ...).
+func chiMethod(method string) string {
+	m := strings.ToLower(method)
+	return strings.ToUpper(m[:1]) + m[1:]
+}
+
+func renderRoutes(m Manifest) (string, error) {
+	m.canonicalize()
+	usesAuth := false
+	lines := make([]string, 0, len(m.Endpoints))
+	for _, e := range m.Endpoints {
+		call := callExpr(e)
+		var line string
+		if e.Auth {
+			usesAuth = true
+			line = fmt.Sprintf(`r.With(middleware.RequireAuth).%s(%q, %s)`, chiMethod(e.Method), e.Path, call)
+		} else {
+			line = fmt.Sprintf(`r.%s(%q, %s)`, chiMethod(e.Method), e.Path, call)
+		}
+		lines = append(lines, line)
+	}
+	data := struct {
+		UsesAuth bool
+		Lines    []string
+	}{usesAuth, lines}
+	return renderNamedToString("routes_gen.go.tmpl", data)
+}
+
+func regenerateRoutesAt(handlersDir string, m Manifest) error {
+	out, err := renderRoutes(m)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(handlersDir, "routes_gen.go"), []byte(out), 0644)
 }

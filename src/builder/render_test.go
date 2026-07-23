@@ -3,9 +3,21 @@ package main
 import (
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"testing"
 )
+
+// parseAsGo parses src as Go source, failing the test if it is not valid.
+// Unlike renderAndParse, this renders a raw string rather than a named
+// template, for callers (like renderRoutes) that don't take TemplateData.
+func parseAsGo(t *testing.T, name, src string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, name, src, parser.AllErrors); err != nil {
+		t.Fatalf("%s is not valid Go: %v\n---\n%s", name, err, src)
+	}
+}
 
 // renderAndParse renders tmplName with data and verifies the output is
 // syntactically valid Go. It does not type-check or resolve imports — full
@@ -140,4 +152,80 @@ func TestModelTemplate_CreateTakesPointerForNullable(t *testing.T) {
 func TestModelTestTemplate_NullableIsValidGo(t *testing.T) {
 	data := newData("widget", sampleFieldsWithNullable())
 	renderAndParse(t, "model_test.go.tmpl", data)
+}
+
+func routeManifest(endpoints ...Endpoint) Manifest {
+	m := Manifest{APIVersion: "1.0.0"}
+	for _, e := range endpoints {
+		_ = m.UpsertEndpoint(e)
+	}
+	m.canonicalize()
+	return m
+}
+
+func TestRenderRoutes_EmptyIsValidGoNoMiddleware(t *testing.T) {
+	out, err := renderRoutes(routeManifest())
+	if err != nil {
+		t.Fatalf("renderRoutes: %v", err)
+	}
+	parseAsGo(t, "routes_gen.go", out)
+	if strings.Contains(out, "middleware") {
+		t.Errorf("empty route set must not import middleware:\n%s", out)
+	}
+	if !strings.Contains(out, "func RegisterGenerated(r chi.Router, database *db.DB, appCache *cache.Cache)") {
+		t.Errorf("missing RegisterGenerated signature:\n%s", out)
+	}
+}
+
+func TestRenderRoutes_DepsAndMethods(t *testing.T) {
+	out, err := renderRoutes(routeManifest(
+		Endpoint{Method: "GET", Path: "/api/v1/projects", Handler: "ProjectListGET",
+			Deps: []string{"read", "write", "cache"}, Kind: "list"},
+		Endpoint{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
+			Deps: []string{"write"}, Auth: true, Kind: "mobile_logout"},
+		Endpoint{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST",
+			Deps: []string{}, Kind: "auth_logout"},
+	))
+	if err != nil {
+		t.Fatalf("renderRoutes: %v", err)
+	}
+	parseAsGo(t, "routes_gen.go", out)
+	want := []string{
+		`r.Get("/api/v1/projects", ProjectListGET(database.Read, database.Write, appCache))`,
+		`r.With(middleware.RequireAuth).Delete("/api/v1/auth/logout_token", MobileLogoutDELETE(database.Write))`,
+		`r.Post("/api/v1/auth/logout", LogoutPOST())`,
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing route line:\n  want: %s\n  in:\n%s", w, out)
+		}
+	}
+	if !strings.Contains(out, `"gova/app/middleware"`) {
+		t.Errorf("auth route present but middleware not imported:\n%s", out)
+	}
+}
+
+func TestRenderRoutes_Deterministic(t *testing.T) {
+	e1 := Endpoint{Method: "GET", Path: "/api/v1/a", Handler: "AGet", Deps: []string{"read"}, Kind: "list"}
+	e2 := Endpoint{Method: "GET", Path: "/api/v1/b", Handler: "BGet", Deps: []string{"read"}, Kind: "list"}
+	out1, _ := renderRoutes(routeManifest(e1, e2))
+	out2, _ := renderRoutes(routeManifest(e2, e1))
+	if out1 != out2 {
+		t.Errorf("route render depends on insertion order:\n---1---\n%s\n---2---\n%s", out1, out2)
+	}
+}
+
+func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {
+	out, err := renderRoutes(routeManifest())
+	if err != nil {
+		t.Fatalf("renderRoutes: %v", err)
+	}
+	committed, err := os.ReadFile("../app/handlers/routes_gen.go")
+	if err != nil {
+		t.Fatalf("read committed routes_gen.go: %v", err)
+	}
+	if string(committed) != out {
+		t.Errorf("committed routes_gen.go is not byte-identical to renderRoutes(empty).\n"+
+			"Regenerate it to match.\n---committed---\n%s\n---generated---\n%s", committed, out)
+	}
 }
