@@ -46,7 +46,13 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 	if items[0].ID != id {
 		t.Errorf("GetPage: got ID %d, want %d", items[0].ID, id)
 	}
-
+{{range .Fields}}{{if .Nullable}}
+	if items[0].{{toPascal .Name}} == nil {
+		t.Errorf("GetPage: {{.Name}} was not recovered (nil)")
+	} else if *items[0].{{toPascal .Name}} != {{.Name}}TestVal {
+		t.Errorf("GetPage: {{.Name}} got %v, want %v", *items[0].{{toPascal .Name}}, {{.Name}}TestVal)
+	}
+{{end}}{{end}}
 	// An offset past the end returns an empty (non-nil) slice, not an error,
 	// and the total still reflects the full table.
 	page2, total2, err := m.GetPage(50, 50)

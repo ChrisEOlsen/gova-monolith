@@ -65,6 +65,7 @@ func sampleFieldsWithNullable() []Field {
 		{Name: "title", Type: "string", Nullable: false},
 		{Name: "notes", Type: "string", Nullable: true},
 		{Name: "count", Type: "int", Nullable: false},
+		{Name: "score", Type: "int", Nullable: true},
 	}
 }
 
@@ -83,6 +84,20 @@ func TestModelTemplate_NullableFieldIsPointer(t *testing.T) {
 	}
 	if !strings.Contains(out, "item.Notes = &notesNull.String") {
 		t.Errorf("missing nullable assignment:\n%s", out)
+	}
+
+	// A nullable non-string field must route through its own sql.Null*
+	// wrapper and accessor — a typo in nullTypeFor/nullFieldFor's int
+	// branch would otherwise ship uncaught, since the only other nullable
+	// sample field is a string.
+	if !strings.Contains(out, "Score *int64 `json:\"score\"`") {
+		t.Errorf("nullable int field is not a *int64 pointer:\n%s", out)
+	}
+	if !strings.Contains(out, "var scoreNull sql.NullInt64") {
+		t.Errorf("missing sql.NullInt64 temporary:\n%s", out)
+	}
+	if !strings.Contains(out, "item.Score = &scoreNull.Int64") {
+		t.Errorf("missing nullable int assignment:\n%s", out)
 	}
 }
 
@@ -117,7 +132,7 @@ func TestModelTemplate_CreateTakesPointerForNullable(t *testing.T) {
 	data := newData("widget", sampleFieldsWithNullable())
 	out := renderAndParse(t, "model.go.tmpl", data)
 
-	if !strings.Contains(out, "Create(title string, notes *string, count int64)") {
+	if !strings.Contains(out, "Create(title string, notes *string, count int64, score *int64)") {
 		t.Errorf("Create should take a pointer for the nullable field:\n%s", out)
 	}
 }
