@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	manifestFilePath = "/src/app/api.json"
+	handlersDirPath  = "/src/app/handlers"
+)
+
 type Manifest struct {
 	APIVersion  string     `json:"api_version"`
 	Hash        string     `json:"hash"`
@@ -179,4 +184,43 @@ func regenerateRoutesAt(handlersDir string, m Manifest) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(handlersDir, "routes_gen.go"), []byte(out), 0644)
+}
+
+// fieldsToModel converts Build 1 Field records (carrying schema-derived
+// Nullable) into a manifest Model, adding the implicit id (first) and
+// created_at (last) columns every generated table has.
+func fieldsToModel(name, table string, fields []Field) Model {
+	out := make([]ModelField, 0, len(fields)+2)
+	out = append(out, ModelField{Name: "id", Type: "int", Nullable: false})
+	for _, f := range fields {
+		typ := f.Type
+		if typ == "password" {
+			typ = "string"
+		}
+		out = append(out, ModelField{Name: f.Name, Type: typ, Nullable: f.Nullable})
+	}
+	out = append(out, ModelField{Name: "created_at", Type: "timestamp", Nullable: false})
+	return Model{Name: name, Table: table, Fields: out}
+}
+
+// updateManifestAt is the transactional core: read, upsert all, and only if
+// every upsert succeeded, write api.json and regenerate routes_gen.go. A
+// conflict returns before any file is touched.
+func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint) error {
+	m, err := readManifestAt(apiPath)
+	if err != nil {
+		return err
+	}
+	for _, model := range models {
+		m.UpsertModel(model)
+	}
+	for _, e := range endpoints {
+		if err := m.UpsertEndpoint(e); err != nil {
+			return err // conflict — nothing written yet
+		}
+	}
+	if err := writeManifestAt(apiPath, &m, now); err != nil {
+		return err
+	}
+	return regenerateRoutesAt(handlersDir, m)
 }

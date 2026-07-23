@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -336,6 +337,14 @@ func errResult(msg string) *mcp.CallToolResult {
 	return mcp.NewToolResultError(msg)
 }
 
+// updateManifest is the production wrapper around updateManifestAt, binding
+// the real manifest/handlers paths and the wall clock. Tool handlers call
+// this after rendering their files to self-register into api.json and
+// regenerate routes_gen.go.
+func updateManifest(models []Model, endpoints []Endpoint) error {
+	return updateManifestAt(manifestFilePath, handlersDirPath, time.Now(), models, endpoints)
+}
+
 func renderToFile(tmplName, outPath string, data TemplateData) error {
 	tmpl, err := getTemplate(tmplName)
 	if err != nil {
@@ -428,21 +437,23 @@ func main() {
 	), handleCreateModel)
 
 	s.AddTool(mcp.NewTool("create_handler",
-		mcp.WithDescription("Generate a single JSON handler stub in handlers/name.go. Implement the TODO logic. Wire route in main.go after."),
+		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Handler name in snake_case")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method: GET, POST, PUT, DELETE")),
-		mcp.WithBoolean("auth_required", mcp.Description("Inject auth guard — returns JSON 401 if unauthenticated")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects/{id}/archive")),
+		mcp.WithBoolean("auth_required", mcp.Description("Require authentication — enforced by a RequireAuth route wrap")),
 	), handleCreateHandler)
 
 	s.AddTool(mcp.NewTool("create_page",
-		mcp.WithDescription("Generate: static/pages/filename.html + static/js/filename.js + handlers/filename.go stub. After: add forms with add_js_form, wire route in main.go."),
+		mcp.WithDescription("Generate: static/pages/filename.html + static/js/filename.js + handlers/filename.go, and register its GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("filename", mcp.Required(), mcp.Description("Page filename without extension")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Page title")),
-		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects")),
+		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load; also enforced server-side by a RequireAuth route wrap")),
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
-		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module. After: add forms with add_js_form, wire route in main.go."),
+		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module, and register the GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldList)
@@ -563,9 +574,13 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
 	method, _ := req.Params.Arguments["method"].(string)
+	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
 	if !isSafeIdent(name) {
 		return errResult("invalid handler name"), nil
+	}
+	if !strings.HasPrefix(path, "/api/v1/") {
+		return errResult("path must start with /api/v1/"), nil
 	}
 	data := newData(name, nil)
 	data.Method = strings.ToUpper(method)
@@ -575,14 +590,31 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	if err := renderToFile("handler.go.tmpl", outPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return mcp.NewToolResultText("Created: " + outPath + "\n\nImplement the TODO logic. Wire route in main.go.\n\n" + runPatternChecks()), nil
+
+	endpoint := Endpoint{
+		Method: strings.ToUpper(method), Path: path,
+		Handler: toPascal(name) + strings.ToUpper(method),
+		Deps:    []string{"read", "write", "cache"},
+		Auth:    authRequired, Kind: "custom",
+	}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	return mcp.NewToolResultText("Created: " + outPath +
+		"\nRegistered " + strings.ToUpper(method) + " " + path +
+		" in api.json + routes_gen.go.\nImplement the TODO logic.\n\n" + runPatternChecks()), nil
 }
 func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	filename, _ := req.Params.Arguments["filename"].(string)
 	title, _ := req.Params.Arguments["title"].(string)
+	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
 	if !isSafeIdent(filename) {
 		return errResult("invalid filename"), nil
+	}
+	if !strings.HasPrefix(path, "/api/v1/") {
+		return errResult("path must start with /api/v1/"), nil
 	}
 	data := newData(filename, nil)
 	data.Title = title
@@ -601,9 +633,19 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err := renderToFile("handler.go.tmpl", handlerPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
+
+	endpoint := Endpoint{
+		Method: "GET", Path: path, Handler: toPascal(filename) + "GET",
+		Deps: []string{"read", "write", "cache"}, Auth: authRequired, Kind: "custom",
+	}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
 	return mcp.NewToolResultText(
 		"Created: " + htmlPath + "\nCreated: " + jsPath + "\nCreated: " + handlerPath +
-			"\n\nNext: wire route in main.go. Add forms with add_js_form.\n\n" + runPatternChecks(),
+			"\nRegistered GET " + path + " in api.json + routes_gen.go.\n" +
+			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
 func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -643,10 +685,22 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		}
 		results = append(results, "Created: "+spec.out)
 	}
+
+	model := fieldsToModel(name, toPlural(name), fields)
+	endpoint := Endpoint{
+		Method: "GET", Path: "/api/v1/" + toPlural(name),
+		Handler: toPascal(name) + "ListGET",
+		Deps:    []string{"read", "write", "cache"},
+		Auth:    false, Model: name, Kind: "list",
+	}
+	if err := updateManifest([]Model{model}, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
 	return mcp.NewToolResultText(
 		strings.Join(results, "\n") +
-			"\n\nNext: wire GET route in main.go, add POST handler with create_handler, add form with add_js_form.\n\n" +
-			runPatternChecks(),
+			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and updated api.json + routes_gen.go.\n" +
+			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,6 +126,88 @@ func TestHash_OrderIndependent(t *testing.T) {
 
 	if a.Hash != b.Hash {
 		t.Errorf("hash depends on insertion order: %s vs %s", a.Hash, b.Hash)
+	}
+}
+
+func TestFieldsToModel_AddsIDAndCreatedAt(t *testing.T) {
+	fields := []Field{
+		{Name: "name", Type: "string", Nullable: false},
+		{Name: "notes", Type: "string", Nullable: true},
+	}
+	m := fieldsToModel("project", "projects", fields)
+	if m.Name != "project" || m.Table != "projects" {
+		t.Fatalf("model identity wrong: %+v", m)
+	}
+	// id first, created_at last, declared fields in between.
+	if m.Fields[0].Name != "id" || m.Fields[0].Type != "int" {
+		t.Errorf("first field should be id:int, got %+v", m.Fields[0])
+	}
+	last := m.Fields[len(m.Fields)-1]
+	if last.Name != "created_at" || last.Type != "timestamp" {
+		t.Errorf("last field should be created_at:timestamp, got %+v", last)
+	}
+	// nullable carried through.
+	var notes ModelField
+	for _, f := range m.Fields {
+		if f.Name == "notes" {
+			notes = f
+		}
+	}
+	if !notes.Nullable {
+		t.Error("notes should be nullable in the model")
+	}
+}
+
+func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
+	dir := t.TempDir()
+	handlersDir := filepath.Join(dir, "handlers")
+	if err := os.MkdirAll(handlersDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	apiPath := filepath.Join(dir, "api.json")
+
+	err := updateManifestAt(apiPath, handlersDir, fixedTime(),
+		[]Model{sampleModel()},
+		[]Endpoint{sampleEndpoint()})
+	if err != nil {
+		t.Fatalf("updateManifestAt: %v", err)
+	}
+
+	m, _ := readManifestAt(apiPath)
+	if len(m.Models) != 1 || len(m.Endpoints) != 1 {
+		t.Fatalf("manifest not written: %+v", m)
+	}
+	routes, err := os.ReadFile(filepath.Join(handlersDir, "routes_gen.go"))
+	if err != nil {
+		t.Fatalf("routes_gen.go not written: %v", err)
+	}
+	if !strings.Contains(string(routes), "ProjectListGET(database.Read, database.Write, appCache)") {
+		t.Errorf("routes_gen.go missing the route:\n%s", routes)
+	}
+}
+
+func TestUpdateManifestAt_ConflictWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	handlersDir := filepath.Join(dir, "handlers")
+	_ = os.MkdirAll(handlersDir, 0755)
+	apiPath := filepath.Join(dir, "api.json")
+
+	// Seed one endpoint.
+	if err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{sampleEndpoint()}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(apiPath)
+
+	// Same (method,path), different handler -> conflict.
+	bad := sampleEndpoint()
+	bad.Handler = "Rogue"
+	err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{bad})
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	after, _ := os.ReadFile(apiPath)
+	if string(before) != string(after) {
+		t.Error("conflict must not modify api.json")
 	}
 }
 

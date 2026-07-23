@@ -154,6 +154,19 @@ func TestModelTestTemplate_NullableIsValidGo(t *testing.T) {
 	renderAndParse(t, "model_test.go.tmpl", data)
 }
 
+func TestHandlerTemplate_NoInlineAuthCheck(t *testing.T) {
+	data := newData("archive_project", nil)
+	data.Method = "POST"
+	data.AuthRequired = true
+	out := renderAndParse(t, "handler.go.tmpl", data)
+	if strings.Contains(out, "middleware.UserID") {
+		t.Errorf("inline auth check should be gone (RequireAuth wrap enforces it):\n%s", out)
+	}
+	if strings.Contains(out, `"gova/app/middleware"`) {
+		t.Errorf("handler template should no longer import middleware:\n%s", out)
+	}
+}
+
 func routeManifest(endpoints ...Endpoint) Manifest {
 	m := Manifest{APIVersion: "1.0.0"}
 	for _, e := range endpoints {
