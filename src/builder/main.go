@@ -460,11 +460,11 @@ func main() {
 	), handleScaffoldList)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages. Wire 5 routes in main.go (printed in output)."),
+		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages, and register the auth routes + user model in api.json + routes_gen.go."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
-		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Wire 2 routes in main.go (printed in output)."),
+		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Registers the route in api.json + routes_gen.go."),
 	), handleScaffoldRegistration)
 
 	s.AddTool(mcp.NewTool("add_js_form",
