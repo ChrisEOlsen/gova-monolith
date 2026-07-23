@@ -101,7 +101,7 @@ func RequireAuth(next http.Handler) http.Handler {
 		if UserID(r) == 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"ok":false,"error":"unauthorized"}`))
+			w.Write([]byte(`{"ok":false,"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 		next.ServeHTTP(w, r)

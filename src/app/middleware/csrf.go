@@ -34,7 +34,7 @@ func CSRF(next http.Handler) http.Handler {
 		// browser auto-attaching credentials to a forged cross-site request;
 		// a native app calling this endpoint directly was never reachable
 		// that way in the first place.
-		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.URL.Path == "/api/auth/login_token" {
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.URL.Path == "/api/v1/auth/login_token" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -61,7 +61,7 @@ func CSRF(next http.Handler) http.Handler {
 			if !hmac.Equal([]byte(token), []byte(headerToken)) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte(`{"ok":false,"error":"invalid CSRF token"}`))
+				w.Write([]byte(`{"ok":false,"error":"invalid CSRF token","code":"forbidden"}`))
 				return
 			}
 		}

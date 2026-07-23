@@ -151,6 +151,8 @@ Helpers in `handlers/json.go`: `jsonOK`, `jsonList`, `jsonError`,
 | **Sessions** | Signed cookie (`gova_session`). No database hit per request. |
 | **Cache** | In-process cache in `cache/cache.go`. Lost on restart — that's fine. |
 
+> **mcp image rebuilds:** the `mcp` container embeds `src/builder/templates` via `//go:embed` at IMAGE BUILD time, not at container start. After editing anything under `src/builder/` (templates or generator code), a plain `docker compose restart` reruns the stale binary and silently generates old-shape code from the running MCP tools. Rebuild the image instead: `docker compose up -d --build`.
+
 ---
 
 ## Tool Cheat Sheet
