@@ -751,10 +751,26 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		}
 		results = append(results, "Created: "+spec.out)
 	}
-	results = append(results, "\nRegister routes in main.go:\n"+
-		"  r.Post(\"/api/v1/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
-		"  r.Post(\"/api/v1/auth/logout\", handlers.LogoutPOST())\n"+
-		"  r.Get(\"/api/v1/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
+
+	userModel := Model{Name: "user", Table: "users", Fields: []ModelField{
+		{Name: "id", Type: "int", Nullable: false},
+		{Name: "name", Type: "string", Nullable: false},
+		{Name: "email", Type: "string", Nullable: false},
+		{Name: "created_at", Type: "timestamp", Nullable: false},
+	}}
+	endpoints := []Endpoint{
+		{Method: "POST", Path: "/api/v1/auth/login", Handler: "LoginPOST",
+			Deps: []string{"read", "write", "cache"}, Kind: "auth_login"},
+		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST",
+			Deps: []string{}, Kind: "auth_logout"},
+		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "auth_me"},
+	}
+	if err := updateManifest([]Model{userModel}, endpoints); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	results = append(results, "\nRegistered auth routes (login, logout, me) and the user model in api.json + routes_gen.go.")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -774,8 +790,14 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 		results = append(results, "Created: "+spec.out)
 	}
-	results = append(results, "\nAdd routes in main.go:\n"+
-		"  r.Post(\"/api/v1/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
+
+	endpoint := Endpoint{Method: "POST", Path: "/api/v1/auth/register", Handler: "RegisterPOST",
+		Deps: []string{"read", "write", "cache"}, Kind: "register"}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	results = append(results, "\nRegistered registration route in api.json + routes_gen.go.")
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -867,30 +889,32 @@ func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mc
 	outPath := "/src/app/handlers/mobile_auth.go"
 	if _, statErr := os.Stat(outPath); statErr == nil {
 		results = append(results, "handlers/mobile_auth.go already exists — skipping (idempotent)")
-		return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions()), nil
+	} else {
+		if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+outPath)
+
+		testPath := "/src/app/handlers/mobile_auth_test.go"
+		if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+testPath)
 	}
 
-	if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
-		return errResult(err.Error()), nil
+	endpoints := []Endpoint{
+		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST",
+			Deps: []string{"read", "write", "cache"}, Kind: "mobile_login"},
+		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
+			Deps: []string{"write"}, Auth: true, Kind: "mobile_logout"},
+		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "mobile_me"},
 	}
-	results = append(results, "Created: "+outPath)
-
-	testPath := "/src/app/handlers/mobile_auth_test.go"
-	if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
-		return errResult(err.Error()), nil
+	if err := updateManifest(nil, endpoints); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
 	}
-	results = append(results, "Created: "+testPath)
 
-	return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions() + "\n\n" + runPatternChecks()), nil
-}
+	results = append(results, "\nRegistered mobile auth routes (login_token, logout_token, me_token) in api.json + routes_gen.go.")
 
-func mobileAuthRouteInstructions() string {
-	return `
-
-Register routes in main.go (check for duplicates before adding):
-  r.Post("/api/v1/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
-  r.Delete("/api/v1/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
-  r.Get("/api/v1/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
-
-Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
+	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
