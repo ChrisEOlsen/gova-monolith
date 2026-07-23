@@ -49,6 +49,7 @@ func main() {
 
 	// API
 	r.Get("/api/v1/_version", handlers.VersionGET())
+	r.Get("/api/v1/_manifest", handlers.ManifestGET())
 
 	// Generated API routes registered here by MCP tools.
 	// Use database.Read for GET handlers, database.Write for POST handlers.

@@ -39,6 +39,10 @@ func TestVersionGET(t *testing.T) {
 }
 
 func TestVersionGET_IncludesManifestHash(t *testing.T) {
+	// VersionGET reads "./api.json" relative to CWD via loadManifest. At
+	// runtime the app's CWD is the app module root (/src/app); Chdir there
+	// so the test matches.
+	t.Chdir("..")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/_version", nil)
 	rec := httptest.NewRecorder()
 	VersionGET()(rec, req)

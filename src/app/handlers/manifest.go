@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const manifestPath = "../api.json"
+const manifestPath = "./api.json"
 
 // Manifest mirrors the builder's api.json shape. The app only reads it.
 type Manifest struct {
@@ -46,13 +46,7 @@ func loadManifest(path string) Manifest {
 	empty := Manifest{APIVersion: "1.0.0", Models: []Model{}, Endpoints: []Endpoint{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Fallback for tests: try ../api.json if ./api.json doesn't exist
-		if data2, err2 := os.ReadFile("../api.json"); err2 == nil {
-			data = data2
-			err = nil
-		} else {
-			return empty
-		}
+		return empty
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {

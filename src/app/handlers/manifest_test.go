@@ -42,8 +42,10 @@ func TestLoadManifest_MissingIsEmpty(t *testing.T) {
 }
 
 func TestManifestGET_ServesEnvelope(t *testing.T) {
-	// ManifestGET reads "./api.json" relative to CWD; the committed repo file
-	// exists at the app module root, which is the test's working dir.
+	// ManifestGET reads "./api.json" relative to CWD. At runtime the app's
+	// CWD is the app module root (/src/app); Chdir there so the test matches
+	// where the committed repo file actually lives.
+	t.Chdir("..")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/_manifest", nil)
 	rec := httptest.NewRecorder()
 	ManifestGET()(rec, req)
