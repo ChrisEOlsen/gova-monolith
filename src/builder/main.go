@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -486,45 +487,34 @@ func main() {
 
 // Tool handler stubs — implemented in subsequent tasks
 func handleInspectApp(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	listDir := func(pattern, label string) string {
+	scan := func(pattern string) []string {
 		files, _ := filepath.Glob(pattern)
-		names := make([]string, 0, len(files))
+		names := []string{}
 		for _, f := range files {
 			base := filepath.Base(f)
 			if base == ".gitkeep" {
 				continue
 			}
-			names = append(names, "  "+base)
+			names = append(names, base)
 		}
-		if len(names) == 0 {
-			return label + "\n  (none)"
-		}
-		return label + "\n" + strings.Join(names, "\n")
+		return names
 	}
-
-	sections := []string{
-		listDir("/src/app/models/*.go", "Models:"),
-		listDir("/src/app/handlers/*.go", "Handlers:"),
-		listDir("/src/app/static/pages/*.html", "Pages (HTML):"),
-		listDir("/src/app/static/js/*.js", "Pages (JS):"),
+	onDisk := onDiskFiles{
+		Models:   scan("/src/app/models/*.go"),
+		Handlers: scan("/src/app/handlers/*.go"),
+		Pages:    scan("/src/app/static/pages/*.html"),
+		JS:       scan("/src/app/static/js/*.js"),
 	}
-
-	mainContent, err := os.ReadFile("/src/app/main.go")
-	if err == nil {
-		routeRe := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)"`)
-		matches := routeRe.FindAllStringSubmatch(string(mainContent), -1)
-		routes := make([]string, 0, len(matches))
-		for _, m := range matches {
-			routes = append(routes, "  "+m[1]+" "+m[2])
-		}
-		if len(routes) == 0 {
-			sections = append(sections, "Routes (main.go):\n  (none registered)")
-		} else {
-			sections = append(sections, "Routes (main.go):\n"+strings.Join(routes, "\n"))
-		}
+	m, err := readManifestAt(manifestFilePath)
+	if err != nil {
+		return errResult(err.Error()), nil
 	}
-
-	return mcp.NewToolResultText(strings.Join(sections, "\n\n")), nil
+	rep := buildInspection(m, onDisk)
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, _ := req.Params.Arguments["query"].(string)
