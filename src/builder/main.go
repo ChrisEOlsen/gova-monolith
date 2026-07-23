@@ -895,10 +895,16 @@ func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mc
 	endpoints := []Endpoint{
 		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST",
 			Deps: []string{"read", "write", "cache"}, Kind: "mobile_login"},
+		// Auth: false — bearer-token endpoints self-enforce in the handler;
+		// the session-cookie RequireAuth wrap would 401 them since mobile
+		// clients send no gova_session cookie.
 		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
-			Deps: []string{"write"}, Auth: true, Kind: "mobile_logout"},
+			Deps: []string{"write"}, Auth: false, Kind: "mobile_logout"},
+		// Auth: false — bearer-token endpoints self-enforce in the handler;
+		// the session-cookie RequireAuth wrap would 401 them since mobile
+		// clients send no gova_session cookie.
 		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
-			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "mobile_me"},
+			Deps: []string{"read", "write", "cache"}, Auth: false, Kind: "mobile_me"},
 	}
 	if err := updateManifest(nil, endpoints); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil

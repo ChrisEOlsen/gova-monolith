@@ -228,6 +228,42 @@ func TestRenderRoutes_Deterministic(t *testing.T) {
 	}
 }
 
+// TestRenderRoutes_MobileBearerNotWrapped guards against regressing the
+// mobile bearer-token endpoints back under the RequireAuth session wrap.
+// Mobile clients authenticate via Authorization: Bearer <token> and send no
+// gova_session cookie, so RequireAuth (which only checks the session-derived
+// UserID) would 401 them before the handler's own bearer-token check ever
+// runs. handleScaffoldMobileAuth registers MobileMeGET/MobileLogoutDELETE
+// with Auth:false for exactly this reason — this test proves renderRoutes
+// respects that and doesn't add the wrap, while still confirming a genuine
+// Auth:true endpoint DOES get wrapped (so the test would catch a regression
+// in either direction).
+func TestRenderRoutes_MobileBearerNotWrapped(t *testing.T) {
+	out, err := renderRoutes(routeManifest(
+		Endpoint{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: false, Kind: "mobile_me"},
+		Endpoint{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "auth_me"},
+	))
+	if err != nil {
+		t.Fatalf("renderRoutes: %v", err)
+	}
+	parseAsGo(t, "routes_gen.go", out)
+
+	wantMobileLine := `r.Get("/api/v1/auth/me_token", MobileMeGET(database.Read, database.Write, appCache))`
+	if !strings.Contains(out, wantMobileLine) {
+		t.Errorf("missing unwrapped mobile-me route line:\n  want: %s\n  in:\n%s", wantMobileLine, out)
+	}
+	if strings.Contains(out, `middleware.RequireAuth).Get("/api/v1/auth/me_token"`) {
+		t.Errorf("mobile bearer endpoint must NOT be wrapped in middleware.RequireAuth:\n%s", out)
+	}
+
+	wantSessionLine := `r.With(middleware.RequireAuth).Get("/api/v1/auth/me", MeGET(database.Read, database.Write, appCache))`
+	if !strings.Contains(out, wantSessionLine) {
+		t.Errorf("missing RequireAuth-wrapped session route line:\n  want: %s\n  in:\n%s", wantSessionLine, out)
+	}
+}
+
 func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {
 	out, err := renderRoutes(routeManifest())
 	if err != nil {
