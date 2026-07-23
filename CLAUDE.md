@@ -63,7 +63,7 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 > **Auth is optional.** Skip Option C for public sites. `middleware.Auth` is passive — it reads a session cookie if present but never blocks on its own. Protect specific API endpoints with `middleware.RequireAuth`. Protect pages client-side by calling `requireAuth()` at the top of the JS module.
 
 ### 3. Add Forms
-- Use `add_js_form(page='projects', api_endpoint='/api/projects_create', ...)` to inject creation forms.
+- Use `add_js_form(page='projects', api_endpoint='/api/v1/projects', ...)` to inject creation forms.
 - Edit `.js` files to add custom behavior.
 - Edit `.html` files to adjust layout and structure.
 - Keep Go handler logic in `handlers/`. HTML in `static/pages/`. JS in `static/js/`.
@@ -88,7 +88,7 @@ Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above 
 ## Critical Constraints
 
 1. **No Raw SQL in handlers.** Use model methods only.
-   - Correct: `model.GetAll()`
+   - Correct: `model.GetPage(limit, offset)`
    - Wrong: `db.Query("SELECT * FROM projects")`
 
 2. **No HTML rendering in Go handlers.** All handlers return JSON.
@@ -114,6 +114,33 @@ Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above 
 
 ---
 
+## API Wire Contract
+
+Every JSON response uses one envelope:
+
+```json
+{ "ok": true, "data": [ ... ], "meta": { "limit": 50, "offset": 0, "total": 123 } }
+{ "ok": false, "error": "Name is required", "code": "validation_failed", "fields": { "name": "required" } }
+```
+
+- **`data` is never `null` for a list.** Models initialize slices non-nil and
+  `jsonOK`/`jsonList` normalize as a second guard. A typed client decoding an
+  array must never see `null`.
+- **`error` is always a plain string.** `code` and `fields` are additive.
+- **Codes:** `unauthorized`, `forbidden`, `not_found`, `conflict`,
+  `validation_failed`, `rate_limited`, `internal`.
+- **Timestamps** are RFC3339, UTC, second precision — via `models.Time`. Never
+  use a bare `time.Time` in a model struct.
+- **Lists are paginated by default:** `?limit=` (1–200, default 50) and
+  `?offset=`. Use `jsonList(w, items, Meta{...})`, not `jsonOK`.
+- **All API routes live under `/api/v1/`.**
+- `GET /api/v1/_version` reports `api_version` and `min_client_version`.
+
+Helpers in `handlers/json.go`: `jsonOK`, `jsonList`, `jsonError`,
+`jsonErrorCode`, `jsonValidationError`.
+
+---
+
 ## Infrastructure
 
 | Layer | Detail |
@@ -132,10 +159,10 @@ Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above 
 |---|---|---|
 | `inspect_app` | **Before scaffolding** — existing models, handlers, JS pages, routes | — |
 | `execute_sql` | Create tables — always before `create_model` | — |
-| `create_model` | Data layer; table must exist first | Yes — CRUD roundtrip |
+| `create_model` | Data layer; table must exist first. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
 | `create_handler` | Single custom JSON endpoint stub | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
 | `create_page` | Full page: `.html` shell + `.js` module + Go handler stub | No — same as `create_handler` |
-| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js` | Yes — CRUD + list-handler tests |
+| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD + list-handler tests |
 | `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting | Yes — login, rate-limit, CSRF tests |
 | `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
 | `scaffold_mobile_auth` | Token-based auth for mobile clients (iOS/Android) — run after `scaffold_auth` | Yes — token issuance, bearer-auth, rate-limit tests |
@@ -170,7 +197,7 @@ import { requireAuth } from '/static/js/lib/auth.js'; // protected pages only
 const listEl = document.getElementById('item-list');
 
 export async function loadList() {
-  const res = await get('/api/items');
+  const res = await get('/api/v1/items');
   if (!res.ok) { listEl.textContent = 'Failed to load.'; return; }
   renderList(res.data ?? []);
 }

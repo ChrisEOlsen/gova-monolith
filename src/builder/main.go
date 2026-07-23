@@ -408,7 +408,7 @@ func main() {
 	), handleExecuteSQL)
 
 	s.AddTool(mcp.NewTool("create_model",
-		mcp.WithDescription("Generate models/Name.go with GetAll/Find/Create/Update/Delete and 5-min cache. Table must exist first (run execute_sql)."),
+		mcp.WithDescription("Generate models/Name.go with GetPage/Find/Create/Delete and 5-min cache. Table must exist first (run execute_sql)."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Model name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleCreateModel)
