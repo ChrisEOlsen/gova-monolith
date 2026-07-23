@@ -64,6 +64,7 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 ### 3. Add Forms
 - Use `add_js_form(page='projects', api_endpoint='/api/v1/projects', ...)` to inject creation forms.
+- Routes are registered automatically — scaffold and create_handler/create_page update api.json and routes_gen.go.
 - Edit `.js` files to add custom behavior.
 - Edit `.html` files to adjust layout and structure.
 - Keep Go handler logic in `handlers/`. HTML in `static/pages/`. JS in `static/js/`.
@@ -141,6 +142,29 @@ Helpers in `handlers/json.go`: `jsonOK`, `jsonList`, `jsonError`,
 
 ---
 
+## API Manifest & Routing
+
+`src/app/api.json` is the machine-readable source of truth for the API surface —
+every model (with field types and nullability) and every endpoint (method, path,
+handler, auth, kind). It is committed source, not a build artifact.
+
+- **Routes are automatic.** Scaffold tools and `create_handler`/`create_page`
+  upsert their records into `api.json` and regenerate
+  `src/app/handlers/routes_gen.go`. `main.go` mounts them with one
+  `handlers.RegisterGenerated(...)` call. **Never hand-wire a route in main.go,
+  and never edit `routes_gen.go` (it is generated).**
+- **Per-endpoint auth is declarative.** An endpoint's `auth: true` makes
+  `routes_gen.go` wrap it in `middleware.RequireAuth`. Handlers do not check auth
+  inline.
+- **Served at `GET /api/v1/_manifest`.** `GET /api/v1/_version` also reports a
+  `manifest_hash` so a client or CI can detect any surface change.
+- **`inspect_app` returns JSON** — `{manifest, on_disk, divergence}` — and flags
+  files that drifted from the manifest.
+- **No removal tool.** `api.json` is upsert-only; to remove a resource, edit
+  `api.json` and re-run a scaffold, or regenerate.
+
+---
+
 ## Infrastructure
 
 | Layer | Detail |
@@ -162,8 +186,8 @@ Helpers in `handlers/json.go`: `jsonOK`, `jsonList`, `jsonError`,
 | `inspect_app` | **Before scaffolding** — existing models, handlers, JS pages, routes | — |
 | `execute_sql` | Create tables — always before `create_model` | — |
 | `create_model` | Data layer; table must exist first. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
-| `create_handler` | Single custom JSON endpoint stub | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
-| `create_page` | Full page: `.html` shell + `.js` module + Go handler stub | No — same as `create_handler` |
+| `create_handler` | Single custom JSON endpoint stub. Takes `method` + `path`; self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
+| `create_page` | Full page: `.html` shell + `.js` module + Go handler stub. Takes `path` (method is always `GET`); self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — same as `create_handler` |
 | `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD + list-handler tests |
 | `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting | Yes — login, rate-limit, CSRF tests |
 | `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
@@ -186,6 +210,9 @@ When `scaffold_list` doesn't fit (filtered views, detail pages, dashboards):
 7. add_js_form       → inject form at // @inject-forms marker
 8. docker compose restart app → recompiles CSS, rebuilds the Go binary
 ```
+
+Steps 3 and 4 register their own routes — `create_page` and `create_handler` update
+`api.json` and regenerate `routes_gen.go`. Never hand-wire a route in `main.go`.
 
 ---
 

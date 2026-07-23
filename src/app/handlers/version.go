@@ -19,11 +19,16 @@ const (
 type versionInfo struct {
 	APIVersion       string `json:"api_version"`
 	MinClientVersion string `json:"min_client_version"`
+	ManifestHash     string `json:"manifest_hash"`
 }
 
 // VersionGET handles GET /api/v1/_version
 func VersionGET() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		jsonOK(w, versionInfo{APIVersion: APIVersion, MinClientVersion: MinClientVersion})
+		jsonOK(w, versionInfo{
+			APIVersion:       APIVersion,
+			MinClientVersion: MinClientVersion,
+			ManifestHash:     loadManifest(manifestPath).Hash,
+		})
 	}
 }

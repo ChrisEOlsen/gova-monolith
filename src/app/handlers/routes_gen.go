@@ -1,0 +1,14 @@
+// Code generated from api.json by gova-builder. DO NOT EDIT.
+package handlers
+
+import (
+	"github.com/go-chi/chi/v5"
+	"gova/app/cache"
+	"gova/app/db"
+)
+
+// RegisterGenerated mounts every scaffolded API route. main.go calls this once
+// and is never hand-edited for routes. Framework endpoints (_version,
+// _manifest) are wired directly in main.go, not here.
+func RegisterGenerated(r chi.Router, database *db.DB, appCache *cache.Cache) {
+}

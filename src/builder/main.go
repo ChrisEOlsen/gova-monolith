@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -336,6 +338,14 @@ func errResult(msg string) *mcp.CallToolResult {
 	return mcp.NewToolResultError(msg)
 }
 
+// updateManifest is the production wrapper around updateManifestAt, binding
+// the real manifest/handlers paths and the wall clock. Tool handlers call
+// this after rendering their files to self-register into api.json and
+// regenerate routes_gen.go.
+func updateManifest(models []Model, endpoints []Endpoint) error {
+	return updateManifestAt(manifestFilePath, handlersDirPath, time.Now(), models, endpoints)
+}
+
 func renderToFile(tmplName, outPath string, data TemplateData) error {
 	tmpl, err := getTemplate(tmplName)
 	if err != nil {
@@ -350,6 +360,20 @@ func renderToFile(tmplName, outPath string, data TemplateData) error {
 }
 
 func renderToString(tmplName string, data TemplateData) (string, error) {
+	tmpl, err := getTemplate(tmplName)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// renderNamedToString renders tmplName with an arbitrary payload, for
+// templates (like routes_gen.go.tmpl) whose data shape isn't TemplateData.
+func renderNamedToString(tmplName string, data any) (string, error) {
 	tmpl, err := getTemplate(tmplName)
 	if err != nil {
 		return "", err
@@ -414,31 +438,33 @@ func main() {
 	), handleCreateModel)
 
 	s.AddTool(mcp.NewTool("create_handler",
-		mcp.WithDescription("Generate a single JSON handler stub in handlers/name.go. Implement the TODO logic. Wire route in main.go after."),
+		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Handler name in snake_case")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method: GET, POST, PUT, DELETE")),
-		mcp.WithBoolean("auth_required", mcp.Description("Inject auth guard — returns JSON 401 if unauthenticated")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects/{id}/archive")),
+		mcp.WithBoolean("auth_required", mcp.Description("Require authentication — enforced by a RequireAuth route wrap")),
 	), handleCreateHandler)
 
 	s.AddTool(mcp.NewTool("create_page",
-		mcp.WithDescription("Generate: static/pages/filename.html + static/js/filename.js + handlers/filename.go stub. After: add forms with add_js_form, wire route in main.go."),
+		mcp.WithDescription("Generate: static/pages/filename.html + static/js/filename.js + handlers/filename.go, and register its GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("filename", mcp.Required(), mcp.Description("Page filename without extension")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Page title")),
-		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects")),
+		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load; also enforced server-side by a RequireAuth route wrap")),
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
-		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module. After: add forms with add_js_form, wire route in main.go."),
+		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module, and register the GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldList)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages. Wire 5 routes in main.go (printed in output)."),
+		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages, and register the auth routes + user model in api.json + routes_gen.go."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
-		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Wire 2 routes in main.go (printed in output)."),
+		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Registers the route in api.json + routes_gen.go."),
 	), handleScaffoldRegistration)
 
 	s.AddTool(mcp.NewTool("add_js_form",
@@ -461,45 +487,34 @@ func main() {
 
 // Tool handler stubs — implemented in subsequent tasks
 func handleInspectApp(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	listDir := func(pattern, label string) string {
+	scan := func(pattern string) []string {
 		files, _ := filepath.Glob(pattern)
-		names := make([]string, 0, len(files))
+		names := []string{}
 		for _, f := range files {
 			base := filepath.Base(f)
 			if base == ".gitkeep" {
 				continue
 			}
-			names = append(names, "  "+base)
+			names = append(names, base)
 		}
-		if len(names) == 0 {
-			return label + "\n  (none)"
-		}
-		return label + "\n" + strings.Join(names, "\n")
+		return names
 	}
-
-	sections := []string{
-		listDir("/src/app/models/*.go", "Models:"),
-		listDir("/src/app/handlers/*.go", "Handlers:"),
-		listDir("/src/app/static/pages/*.html", "Pages (HTML):"),
-		listDir("/src/app/static/js/*.js", "Pages (JS):"),
+	onDisk := onDiskFiles{
+		Models:   scan("/src/app/models/*.go"),
+		Handlers: scan("/src/app/handlers/*.go"),
+		Pages:    scan("/src/app/static/pages/*.html"),
+		JS:       scan("/src/app/static/js/*.js"),
 	}
-
-	mainContent, err := os.ReadFile("/src/app/main.go")
-	if err == nil {
-		routeRe := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)"`)
-		matches := routeRe.FindAllStringSubmatch(string(mainContent), -1)
-		routes := make([]string, 0, len(matches))
-		for _, m := range matches {
-			routes = append(routes, "  "+m[1]+" "+m[2])
-		}
-		if len(routes) == 0 {
-			sections = append(sections, "Routes (main.go):\n  (none registered)")
-		} else {
-			sections = append(sections, "Routes (main.go):\n"+strings.Join(routes, "\n"))
-		}
+	m, err := readManifestAt(manifestFilePath)
+	if err != nil {
+		return errResult(err.Error()), nil
 	}
-
-	return mcp.NewToolResultText(strings.Join(sections, "\n\n")), nil
+	rep := buildInspection(m, onDisk)
+	data, err := json.MarshalIndent(rep, "", "  ")
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, _ := req.Params.Arguments["query"].(string)
@@ -549,9 +564,13 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
 	method, _ := req.Params.Arguments["method"].(string)
+	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
 	if !isSafeIdent(name) {
 		return errResult("invalid handler name"), nil
+	}
+	if !strings.HasPrefix(path, "/api/v1/") {
+		return errResult("path must start with /api/v1/"), nil
 	}
 	data := newData(name, nil)
 	data.Method = strings.ToUpper(method)
@@ -561,14 +580,31 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	if err := renderToFile("handler.go.tmpl", outPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return mcp.NewToolResultText("Created: " + outPath + "\n\nImplement the TODO logic. Wire route in main.go.\n\n" + runPatternChecks()), nil
+
+	endpoint := Endpoint{
+		Method: strings.ToUpper(method), Path: path,
+		Handler: toPascal(name) + strings.ToUpper(method),
+		Deps:    []string{"read", "write", "cache"},
+		Auth:    authRequired, Kind: "custom",
+	}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	return mcp.NewToolResultText("Created: " + outPath +
+		"\nRegistered " + strings.ToUpper(method) + " " + path +
+		" in api.json + routes_gen.go.\nImplement the TODO logic.\n\n" + runPatternChecks()), nil
 }
 func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	filename, _ := req.Params.Arguments["filename"].(string)
 	title, _ := req.Params.Arguments["title"].(string)
+	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
 	if !isSafeIdent(filename) {
 		return errResult("invalid filename"), nil
+	}
+	if !strings.HasPrefix(path, "/api/v1/") {
+		return errResult("path must start with /api/v1/"), nil
 	}
 	data := newData(filename, nil)
 	data.Title = title
@@ -587,9 +623,19 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err := renderToFile("handler.go.tmpl", handlerPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
+
+	endpoint := Endpoint{
+		Method: "GET", Path: path, Handler: toPascal(filename) + "GET",
+		Deps: []string{"read", "write", "cache"}, Auth: authRequired, Kind: "custom",
+	}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
 	return mcp.NewToolResultText(
 		"Created: " + htmlPath + "\nCreated: " + jsPath + "\nCreated: " + handlerPath +
-			"\n\nNext: wire route in main.go. Add forms with add_js_form.\n\n" + runPatternChecks(),
+			"\nRegistered GET " + path + " in api.json + routes_gen.go.\n" +
+			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
 func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -629,10 +675,22 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		}
 		results = append(results, "Created: "+spec.out)
 	}
+
+	model := fieldsToModel(name, toPlural(name), fields)
+	endpoint := Endpoint{
+		Method: "GET", Path: "/api/v1/" + toPlural(name),
+		Handler: toPascal(name) + "ListGET",
+		Deps:    []string{"read", "write", "cache"},
+		Auth:    false, Model: name, Kind: "list",
+	}
+	if err := updateManifest([]Model{model}, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
 	return mcp.NewToolResultText(
 		strings.Join(results, "\n") +
-			"\n\nNext: wire GET route in main.go, add POST handler with create_handler, add form with add_js_form.\n\n" +
-			runPatternChecks(),
+			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and updated api.json + routes_gen.go.\n" +
+			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -683,10 +741,26 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		}
 		results = append(results, "Created: "+spec.out)
 	}
-	results = append(results, "\nRegister routes in main.go:\n"+
-		"  r.Post(\"/api/v1/auth/login\",  handlers.LoginPOST(database.Read, database.Write, appCache))\n"+
-		"  r.Post(\"/api/v1/auth/logout\", handlers.LogoutPOST())\n"+
-		"  r.Get(\"/api/v1/auth/me\",      handlers.MeGET(database.Read, database.Write, appCache))")
+
+	userModel := Model{Name: "user", Table: "users", Fields: []ModelField{
+		{Name: "id", Type: "int", Nullable: false},
+		{Name: "name", Type: "string", Nullable: false},
+		{Name: "email", Type: "string", Nullable: false},
+		{Name: "created_at", Type: "timestamp", Nullable: false},
+	}}
+	endpoints := []Endpoint{
+		{Method: "POST", Path: "/api/v1/auth/login", Handler: "LoginPOST",
+			Deps: []string{"read", "write", "cache"}, Kind: "auth_login"},
+		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST",
+			Deps: []string{}, Kind: "auth_logout"},
+		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "auth_me"},
+	}
+	if err := updateManifest([]Model{userModel}, endpoints); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	results = append(results, "\nRegistered auth routes (login, logout, me) and the user model in api.json + routes_gen.go.")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -706,8 +780,14 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 		results = append(results, "Created: "+spec.out)
 	}
-	results = append(results, "\nAdd routes in main.go:\n"+
-		"  r.Post(\"/api/v1/auth/register\", handlers.RegisterPOST(database.Read, database.Write, appCache))")
+
+	endpoint := Endpoint{Method: "POST", Path: "/api/v1/auth/register", Handler: "RegisterPOST",
+		Deps: []string{"read", "write", "cache"}, Kind: "register"}
+	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	results = append(results, "\nRegistered registration route in api.json + routes_gen.go.")
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -799,30 +879,38 @@ func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mc
 	outPath := "/src/app/handlers/mobile_auth.go"
 	if _, statErr := os.Stat(outPath); statErr == nil {
 		results = append(results, "handlers/mobile_auth.go already exists — skipping (idempotent)")
-		return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions()), nil
+	} else {
+		if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+outPath)
+
+		testPath := "/src/app/handlers/mobile_auth_test.go"
+		if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+testPath)
 	}
 
-	if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
-		return errResult(err.Error()), nil
+	endpoints := []Endpoint{
+		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST",
+			Deps: []string{"read", "write", "cache"}, Kind: "mobile_login"},
+		// Auth: false — bearer-token endpoints self-enforce in the handler;
+		// the session-cookie RequireAuth wrap would 401 them since mobile
+		// clients send no gova_session cookie.
+		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
+			Deps: []string{"write"}, Auth: false, Kind: "mobile_logout"},
+		// Auth: false — bearer-token endpoints self-enforce in the handler;
+		// the session-cookie RequireAuth wrap would 401 them since mobile
+		// clients send no gova_session cookie.
+		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
+			Deps: []string{"read", "write", "cache"}, Auth: false, Kind: "mobile_me"},
 	}
-	results = append(results, "Created: "+outPath)
-
-	testPath := "/src/app/handlers/mobile_auth_test.go"
-	if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
-		return errResult(err.Error()), nil
+	if err := updateManifest(nil, endpoints); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
 	}
-	results = append(results, "Created: "+testPath)
 
-	return mcp.NewToolResultText(strings.Join(results, "\n") + mobileAuthRouteInstructions() + "\n\n" + runPatternChecks()), nil
-}
+	results = append(results, "\nRegistered mobile auth routes (login_token, logout_token, me_token) in api.json + routes_gen.go.")
 
-func mobileAuthRouteInstructions() string {
-	return `
-
-Register routes in main.go (check for duplicates before adding):
-  r.Post("/api/v1/auth/login_token",    handlers.MobileLoginPOST(database.Read, database.Write, appCache))
-  r.Delete("/api/v1/auth/logout_token", handlers.MobileLogoutDELETE(database.Write))
-  r.Get("/api/v1/auth/me_token",        handlers.MobileMeGET(database.Read, database.Write, appCache))
-
-Web cookie auth is untouched. Mobile clients use Bearer token headers instead of cookies.`
+	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
