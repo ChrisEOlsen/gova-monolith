@@ -126,7 +126,7 @@ func TestModelTemplate_GetPageReplacesGetAll(t *testing.T) {
 	data := newData("widget", sampleFieldsWithNullable())
 	out := renderAndParse(t, "model.go.tmpl", data)
 
-	if !strings.Contains(out, "func (m *WidgetModel) GetPage(limit, offset int) ([]Widget, int, error)") {
+	if !strings.Contains(out, "func (m *WidgetModel) GetPage(limit, offset int, opts QueryOpts) ([]Widget, int, error)") {
 		t.Errorf("missing GetPage signature:\n%s", out)
 	}
 	if strings.Contains(out, "func (m *WidgetModel) GetAll(") {
@@ -262,6 +262,86 @@ func TestRenderRoutes_MobileBearerNotWrapped(t *testing.T) {
 	if !strings.Contains(out, wantSessionLine) {
 		t.Errorf("missing RequireAuth-wrapped session route line:\n  want: %s\n  in:\n%s", wantSessionLine, out)
 	}
+}
+
+func TestModelTemplate_GetPageTakesQueryOpts(t *testing.T) {
+	data := newData("widget", sampleFieldsWithNullable())
+	out := renderAndParse(t, "model.go.tmpl", data)
+	if !strings.Contains(out, "func (m *WidgetModel) GetPage(limit, offset int, opts QueryOpts) ([]Widget, int, error)") {
+		t.Errorf("GetPage should take QueryOpts:\n%s", out)
+	}
+	if !strings.Contains(out, "widgetAllowedColumns = []string{") {
+		t.Errorf("missing allowed-columns whitelist:\n%s", out)
+	}
+	if !strings.Contains(out, "orderByClause(opts.Sort, widgetAllowedColumns)") {
+		t.Errorf("GetPage should use orderByClause:\n%s", out)
+	}
+	// cache key must vary by sort/filter
+	if !strings.Contains(out, "opts.Sort") || !strings.Contains(out, "opts.FilterField") {
+		t.Errorf("cache key must include sort/filter:\n%s", out)
+	}
+}
+
+func TestModelTemplate_UpdateOnlyWhenCRUD(t *testing.T) {
+	noCrud := newData("widget", sampleFieldsWithNullable())
+	out := renderAndParse(t, "model.go.tmpl", noCrud)
+	if strings.Contains(out, "func (m *WidgetModel) Update(") {
+		t.Errorf("Update must NOT appear without CRUD flag:\n%s", out)
+	}
+
+	crud := newData("widget", sampleFieldsWithNullable())
+	crud.CRUD = true
+	out = renderAndParse(t, "model.go.tmpl", crud)
+	if !strings.Contains(out, "func (m *WidgetModel) Update(id int64, title string, notes *string, count int64, score *int64) error") {
+		t.Errorf("Update signature wrong or missing:\n%s", out)
+	}
+	if !strings.Contains(out, "UPDATE widgets SET title = ?, notes = ?, count = ?, score = ? WHERE id = ?") {
+		t.Errorf("Update SQL wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "return sql.ErrNoRows") {
+		t.Errorf("Update must return sql.ErrNoRows on 0 rows:\n%s", out)
+	}
+}
+
+func TestModelTestTemplate_CRUDVariantValidGo(t *testing.T) {
+	crud := newData("widget", sampleFieldsWithNullable())
+	crud.CRUD = true
+	renderAndParse(t, "model_test.go.tmpl", crud)
+	// non-CRUD variant must also stay valid
+	renderAndParse(t, "model_test.go.tmpl", newData("widget", sampleFieldsWithNullable()))
+}
+
+func TestResourceHandlersTemplate_ValidGoAllFive(t *testing.T) {
+	data := newData("widget", sampleFieldsWithNullable())
+	data.CRUD = true
+	out := renderAndParse(t, "resource_handlers.go.tmpl", data)
+	for _, sym := range []string{
+		"func WidgetListGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDetailGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetCreatePOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetUpdatePUT(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDeleteDELETE(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+	} {
+		if !strings.Contains(out, sym) {
+			t.Errorf("missing handler %q:\n%s", sym, out)
+		}
+	}
+	// sort/filter parsed and mapped to 422 on ErrInvalidQuery
+	if !strings.Contains(out, "errors.Is(err, models.ErrInvalidQuery)") {
+		t.Errorf("list handler must map ErrInvalidQuery to 422:\n%s", out)
+	}
+	if !strings.Contains(out, "chi.URLParam(r, \"id\")") {
+		t.Errorf("detail/update/delete must read the id path param:\n%s", out)
+	}
+	if !strings.Contains(out, "sql.ErrNoRows") {
+		t.Errorf("detail/update must handle not-found:\n%s", out)
+	}
+}
+
+func TestResourceHandlersTestTemplate_ValidGo(t *testing.T) {
+	data := newData("widget", sampleFieldsWithNullable())
+	data.CRUD = true
+	renderAndParse(t, "resource_handlers_test.go.tmpl", data)
 }
 
 func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {

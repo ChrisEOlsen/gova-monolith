@@ -15,7 +15,7 @@ func {{.PascalName}}ListGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http
 		offset := queryInt(r, "offset", 0, 0, maxPageOffset)
 
 		model := models.New{{.PascalName}}Model(readDB, writeDB, appCache)
-		items, total, err := model.GetPage(limit, offset)
+		items, total, err := model.GetPage(limit, offset, models.QueryOpts{})
 		if err != nil {
 			jsonError(w, "failed to load", 500)
 			return
