@@ -231,3 +231,49 @@ func TestWriteThenRead_RoundTrips(t *testing.T) {
 		t.Errorf("generated_at: got %q", back.GeneratedAt)
 	}
 }
+
+func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
+	eps := resourceEndpoints("project")
+	if len(eps) != 5 {
+		t.Fatalf("got %d endpoints, want 5", len(eps))
+	}
+	want := map[string]string{
+		"GET /api/v1/projects":         "list",
+		"GET /api/v1/projects/{id}":    "detail",
+		"POST /api/v1/projects":        "create",
+		"PUT /api/v1/projects/{id}":    "update",
+		"DELETE /api/v1/projects/{id}": "delete",
+	}
+	for _, e := range eps {
+		key := e.Method + " " + e.Path
+		wantKind, ok := want[key]
+		if !ok {
+			t.Errorf("unexpected endpoint %s", key)
+			continue
+		}
+		if e.Kind != wantKind {
+			t.Errorf("%s: kind got %q want %q", key, e.Kind, wantKind)
+		}
+		if e.Auth {
+			t.Errorf("%s: should be public (auth:false)", key)
+		}
+		if e.Model != "project" {
+			t.Errorf("%s: model got %q want project", key, e.Model)
+		}
+		if len(e.Deps) != 3 {
+			t.Errorf("%s: deps got %v want [read write cache]", key, e.Deps)
+		}
+	}
+	// The handler symbols must match what resource_handlers.go.tmpl generates.
+	byKey := map[string]string{}
+	for _, e := range eps {
+		byKey[e.Method+" "+e.Path] = e.Handler
+	}
+	if byKey["GET /api/v1/projects"] != "ProjectListGET" ||
+		byKey["GET /api/v1/projects/{id}"] != "ProjectDetailGET" ||
+		byKey["POST /api/v1/projects"] != "ProjectCreatePOST" ||
+		byKey["PUT /api/v1/projects/{id}"] != "ProjectUpdatePUT" ||
+		byKey["DELETE /api/v1/projects/{id}"] != "ProjectDeleteDELETE" {
+		t.Errorf("handler symbols wrong: %+v", byKey)
+	}
+}

@@ -495,6 +495,12 @@ func main() {
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldList)
 
+	s.AddTool(mcp.NewTool("scaffold_resource",
+		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, and register all 5 routes in api.json + routes_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
+		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
+	), handleScaffoldResource)
+
 	s.AddTool(mcp.NewTool("scaffold_auth",
 		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages, and register the auth routes + user model in api.json + routes_gen.go."),
 	), handleScaffoldAuth)
@@ -727,6 +733,72 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		strings.Join(results, "\n") +
 			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and updated api.json + routes_gen.go.\n" +
 			"Add forms with add_js_form.\n\n" + runPatternChecks(),
+	), nil
+}
+// resourceEndpoints returns the five CRUD endpoints scaffold_resource registers.
+// The handler symbols must match resource_handlers.go.tmpl exactly.
+func resourceEndpoints(name string) []Endpoint {
+	p := toPascal(name)
+	plural := toPlural(name)
+	base := "/api/v1/" + plural
+	rwc := []string{"read", "write", "cache"}
+	return []Endpoint{
+		{Method: "GET", Path: base, Handler: p + "ListGET", Deps: rwc, Model: name, Kind: "list"},
+		{Method: "GET", Path: base + "/{id}", Handler: p + "DetailGET", Deps: rwc, Model: name, Kind: "detail"},
+		{Method: "POST", Path: base, Handler: p + "CreatePOST", Deps: rwc, Model: name, Kind: "create"},
+		{Method: "PUT", Path: base + "/{id}", Handler: p + "UpdatePUT", Deps: rwc, Model: name, Kind: "update"},
+		{Method: "DELETE", Path: base + "/{id}", Handler: p + "DeleteDELETE", Deps: rwc, Model: name, Kind: "delete"},
+	}
+}
+
+func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	name, _ := req.Params.Arguments["name"].(string)
+	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
+	if !isSafeIdent(name) {
+		return errResult("invalid name"), nil
+	}
+	fields := parseFields(rawFieldsToStrings(rawFields))
+	if len(fields) == 0 {
+		return errResult("at least one field is required"), nil
+	}
+	if err := checkReservedName(name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	fields, applyErr := applySchema(toPlural(name), fields)
+	if applyErr != nil {
+		return errResult(applyErr.Error()), nil
+	}
+	data := newData(name, fields)
+	data.CRUD = true
+	data.Title = toPascal(toPlural(name))
+
+	type fileSpec struct{ tmpl, out string }
+	specs := []fileSpec{
+		{"model.go.tmpl", "/src/app/models/" + toPascal(name) + ".go"},
+		{"model_test.go.tmpl", "/src/app/models/" + toPascal(name) + "_test.go"},
+		{"resource_handlers.go.tmpl", "/src/app/handlers/" + name + "_resource.go"},
+		{"resource_handlers_test.go.tmpl", "/src/app/handlers/" + name + "_resource_test.go"},
+		{"list_page.html.tmpl", "/src/app/static/pages/" + toPlural(name) + ".html"},
+		{"list_page.js.tmpl", "/src/app/static/js/" + toPlural(name) + ".js"},
+	}
+	results := []string{}
+	for _, spec := range specs {
+		if err := renderToFile(spec.tmpl, spec.out, data); err != nil {
+			return errResult(err.Error()), nil
+		}
+		results = append(results, "Created: "+spec.out)
+	}
+
+	model := fieldsToModel(name, toPlural(name), fields)
+	if err := updateManifest([]Model{model}, resourceEndpoints(name)); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(
+		strings.Join(results, "\n") +
+			"\n\nRegistered full CRUD (list, detail, create, update, delete) for /api/v1/" + toPlural(name) +
+			" in api.json + routes_gen.go. Endpoints are public — set auth:true per endpoint in api.json to protect them (requires scaffold_auth).\n" +
+			"Add a create form with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
 func handleScaffoldAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
