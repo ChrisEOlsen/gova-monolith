@@ -1,0 +1,96 @@
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/models"
+)
+
+func {{.Name}}ResourceSchema() string {
+	return `CREATE TABLE {{.PluralName}} (
+		id INTEGER PRIMARY KEY,
+		{{- range .Fields}}
+		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
+		{{- end}}
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`
+}
+
+// {{.Name}}Router mounts the five resource routes so path params resolve.
+func {{.Name}}Router(testDB *db.DB, appCache *cache.Cache) chi.Router {
+	r := chi.NewRouter()
+	r.Get("/api/v1/{{.PluralName}}", {{.PascalName}}ListGET(testDB.Read, testDB.Write, appCache))
+	r.Get("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DetailGET(testDB.Read, testDB.Write, appCache))
+	r.Post("/api/v1/{{.PluralName}}", {{.PascalName}}CreatePOST(testDB.Read, testDB.Write, appCache))
+	r.Put("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}UpdatePUT(testDB.Read, testDB.Write, appCache))
+	r.Delete("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DeleteDELETE(testDB.Read, testDB.Write, appCache))
+	return r
+}
+
+func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ResourceSchema())
+	appCache := cache.New()
+	router := {{.Name}}Router(testDB, appCache)
+	model := models.New{{.PascalName}}Model(testDB.Read, testDB.Write, appCache)
+{{testDecls .Fields "\t"}}	id, err := model.Create({{testArgs .Fields}})
+	if err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	do := func(method, target, body string) *httptest.ResponseRecorder {
+		var r *http.Request
+		if body == "" {
+			r = httptest.NewRequest(method, target, nil)
+		} else {
+			r = httptest.NewRequest(method, target, strings.NewReader(body))
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, r)
+		return rec
+	}
+
+	// Detail: found and not-found.
+	if rec := do(http.MethodGet, "/api/v1/{{.PluralName}}/1", ""); rec.Code != 200 {
+		t.Errorf("detail found: got %d, body %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(http.MethodGet, "/api/v1/{{.PluralName}}/999999", ""); rec.Code != 404 {
+		t.Errorf("detail missing: got %d, want 404", rec.Code)
+	}
+	// Detail: non-numeric id -> 422.
+	if rec := do(http.MethodGet, "/api/v1/{{.PluralName}}/abc", ""); rec.Code != 422 {
+		t.Errorf("detail bad id: got %d, want 422", rec.Code)
+	}
+
+	// Create.
+	if rec := do(http.MethodPost, "/api/v1/{{.PluralName}}", `{{testJSON .Fields}}`); rec.Code != 200 {
+		t.Errorf("create: got %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// Update: existing and missing.
+	if rec := do(http.MethodPut, "/api/v1/{{.PluralName}}/1", `{{testJSON .Fields}}`); rec.Code != 200 {
+		t.Errorf("update: got %d, body %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(http.MethodPut, "/api/v1/{{.PluralName}}/999999", `{{testJSON .Fields}}`); rec.Code != 404 {
+		t.Errorf("update missing: got %d, want 404", rec.Code)
+	}
+
+	// List: valid sort ok, bogus sort -> 422.
+	if rec := do(http.MethodGet, "/api/v1/{{.PluralName}}?sort=-id", ""); rec.Code != 200 {
+		t.Errorf("list sort: got %d", rec.Code)
+	}
+	if rec := do(http.MethodGet, "/api/v1/{{.PluralName}}?sort=bogus", ""); rec.Code != 422 {
+		t.Errorf("list bad sort: got %d, want 422", rec.Code)
+	}
+
+	// Delete.
+	if rec := do(http.MethodDelete, "/api/v1/{{.PluralName}}/1", ""); rec.Code != 200 {
+		t.Errorf("delete: got %d", rec.Code)
+	}
+	_ = id
+}

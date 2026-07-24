@@ -311,6 +311,39 @@ func TestModelTestTemplate_CRUDVariantValidGo(t *testing.T) {
 	renderAndParse(t, "model_test.go.tmpl", newData("widget", sampleFieldsWithNullable()))
 }
 
+func TestResourceHandlersTemplate_ValidGoAllFive(t *testing.T) {
+	data := newData("widget", sampleFieldsWithNullable())
+	data.CRUD = true
+	out := renderAndParse(t, "resource_handlers.go.tmpl", data)
+	for _, sym := range []string{
+		"func WidgetListGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDetailGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetCreatePOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetUpdatePUT(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDeleteDELETE(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+	} {
+		if !strings.Contains(out, sym) {
+			t.Errorf("missing handler %q:\n%s", sym, out)
+		}
+	}
+	// sort/filter parsed and mapped to 422 on ErrInvalidQuery
+	if !strings.Contains(out, "errors.Is(err, models.ErrInvalidQuery)") {
+		t.Errorf("list handler must map ErrInvalidQuery to 422:\n%s", out)
+	}
+	if !strings.Contains(out, "chi.URLParam(r, \"id\")") {
+		t.Errorf("detail/update/delete must read the id path param:\n%s", out)
+	}
+	if !strings.Contains(out, "sql.ErrNoRows") {
+		t.Errorf("detail/update must handle not-found:\n%s", out)
+	}
+}
+
+func TestResourceHandlersTestTemplate_ValidGo(t *testing.T) {
+	data := newData("widget", sampleFieldsWithNullable())
+	data.CRUD = true
+	renderAndParse(t, "resource_handlers_test.go.tmpl", data)
+}
+
 func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {
 	out, err := renderRoutes(routeManifest())
 	if err != nil {

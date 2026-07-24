@@ -191,6 +191,33 @@ var funcMap = template.FuncMap{
 		}
 		return " NOT NULL"
 	},
+	// structCallArgs emits "prefix.Field1, prefix.Field2" using PascalCase field
+	// names — for passing a decoded request struct's fields to Create/Update.
+	"structCallArgs": func(fields []Field, prefix string) string {
+		args := make([]string, len(fields))
+		for i, f := range fields {
+			args[i] = prefix + toPascal(f.Name)
+		}
+		return strings.Join(args, ", ")
+	},
+	// testJSON emits a JSON object literal with a test value per field, for
+	// building a create/update request body in generated tests.
+	"testJSON": func(fields []Field) string {
+		parts := make([]string, len(fields))
+		for i, f := range fields {
+			v := `"test"`
+			switch f.Type {
+			case "int":
+				v = "1"
+			case "boolean":
+				v = "true"
+			case "float":
+				v = "1.5"
+			}
+			parts[i] = `"` + f.Name + `": ` + v
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	},
 }
 
 func goTypeFor(t string) string {
