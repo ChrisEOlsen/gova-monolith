@@ -2,6 +2,9 @@ package models
 
 import (
 	"testing"
+	{{- if .CRUD}}
+	"database/sql"
+	{{- end}}
 
 	"gova/app/cache"
 	"gova/app/db"
@@ -33,7 +36,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Errorf("Find: got ID %d, want %d", found.ID, id)
 	}
 
-	items, total, err := m.GetPage(50, 0)
+	items, total, err := m.GetPage(50, 0, QueryOpts{})
 	if err != nil {
 		t.Fatalf("GetPage: %v", err)
 	}
@@ -55,7 +58,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 {{end}}{{end}}
 	// An offset past the end returns an empty (non-nil) slice, not an error,
 	// and the total still reflects the full table.
-	page2, total2, err := m.GetPage(50, 50)
+	page2, total2, err := m.GetPage(50, 50, QueryOpts{})
 	if err != nil {
 		t.Fatalf("GetPage(offset 50): %v", err)
 	}
@@ -76,3 +79,43 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Error("Find after Delete: expected error, got nil")
 	}
 }
+
+{{if .CRUD}}
+func Test{{.PascalName}}Model_Update(t *testing.T) {
+	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
+		id INTEGER PRIMARY KEY,
+		{{- range .Fields}}
+		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
+		{{- end}}
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+
+{{testDecls .Fields "\t"}}	id, err := m.Create({{testArgs .Fields}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Update the existing row — should succeed.
+	if err := m.Update(id, {{testArgs .Fields}}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Update a missing row — should report sql.ErrNoRows.
+	if err := m.Update(999999, {{testArgs .Fields}}); err != sql.ErrNoRows {
+		t.Errorf("Update(missing): got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func Test{{.PascalName}}Model_GetPageRejectsBadSort(t *testing.T) {
+	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
+		id INTEGER PRIMARY KEY,
+		{{- range .Fields}}
+		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
+		{{- end}}
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+	if _, _, err := m.GetPage(50, 0, QueryOpts{Sort: "bogus_column"}); err != ErrInvalidQuery {
+		t.Errorf("GetPage bad sort: got %v, want ErrInvalidQuery", err)
+	}
+}
+{{end}}

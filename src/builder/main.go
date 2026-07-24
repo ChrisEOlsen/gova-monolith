@@ -115,6 +115,14 @@ var funcMap = template.FuncMap{
 		}
 		return strings.Join(p, ", ")
 	},
+	// updateSet emits "field1 = ?, field2 = ?" for an UPDATE statement.
+	"updateSet": func(fields []Field) string {
+		parts := make([]string, len(fields))
+		for i, f := range fields {
+			parts[i] = f.Name + " = ?"
+		}
+		return strings.Join(parts, ", ")
+	},
 	"createParams": func(fields []Field) string {
 		params := make([]string, len(fields))
 		for i, f := range fields {
@@ -316,6 +324,7 @@ type TemplateData struct {
 	APIEndpoint  string
 	SubmitLabel  string
 	FormName     string
+	CRUD         bool
 }
 
 func newData(name string, fields []Field) TemplateData {

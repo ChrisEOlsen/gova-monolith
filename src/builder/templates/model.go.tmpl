@@ -36,11 +36,32 @@ func New{{.PascalName}}Model(readDB, writeDB *sql.DB, c *cache.Cache) *{{.Pascal
 	return &{{.PascalName}}Model{readDB: readDB, writeDB: writeDB, cache: c}
 }
 
-// GetPage returns one window of rows plus the unfiltered total.
-//
-// Callers clamp limit and offset before calling — see handlers/paging.go.
-func (m *{{.PascalName}}Model) GetPage(limit, offset int) ([]{{.PascalName}}, int, error) {
-	cacheKey := fmt.Sprintf("{{.PluralName}}:page:%d:%d", limit, offset)
+// {{.Name}}AllowedColumns is the whitelist for sort/filter — the model's real
+// columns. orderByClause/filterField reject anything not in this list, so the
+// only column names ever placed into SQL come from here.
+var {{.Name}}AllowedColumns = []string{"id", {{range .Fields}}"{{.Name}}", {{end}}"created_at"}
+
+// GetPage returns one window of rows plus the total (of the filtered set).
+// Callers clamp limit and offset — see handlers/paging.go. Sort/filter columns
+// are validated against {{.Name}}AllowedColumns; an unknown column yields
+// ErrInvalidQuery (handlers map it to 422).
+func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.PascalName}}, int, error) {
+	orderBy, err := orderByClause(opts.Sort, {{.Name}}AllowedColumns)
+	if err != nil {
+		return nil, 0, err
+	}
+	where := ""
+	args := []any{}
+	if opts.FilterField != "" {
+		col, ferr := filterField(opts.FilterField, {{.Name}}AllowedColumns)
+		if ferr != nil {
+			return nil, 0, ferr
+		}
+		where = " WHERE " + col + " = ?"
+		args = append(args, opts.FilterValue)
+	}
+
+	cacheKey := fmt.Sprintf("{{.PluralName}}:page:%d:%d:%s:%s:%s", limit, offset, opts.Sort, opts.FilterField, opts.FilterValue)
 	if hit, ok := m.cache.Get(cacheKey); ok {
 		var page {{.Name}}Page
 		if err := json.Unmarshal(hit, &page); err == nil {
@@ -49,14 +70,12 @@ func (m *{{.PascalName}}Model) GetPage(limit, offset int) ([]{{.PascalName}}, in
 	}
 
 	var total int
-	if err := m.readDB.QueryRow("SELECT COUNT(*) FROM {{.PluralName}}").Scan(&total); err != nil {
+	if err := m.readDB.QueryRow("SELECT COUNT(*) FROM {{.PluralName}}"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := m.readDB.Query(
-		"SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-		limit, offset,
-	)
+	query := "SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}}" + where + " " + orderBy + " LIMIT ? OFFSET ?"
+	rows, err := m.readDB.Query(query, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -116,3 +135,30 @@ func (m *{{.PascalName}}Model) Delete(id int64) error {
 	}
 	return err
 }
+
+{{if .CRUD}}
+func (m *{{.PascalName}}Model) Update(id int64, {{createParams .Fields}}) error {
+	{{- range .Fields}}{{if eq .Type "password"}}
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	{{end}}{{end}}
+	res, err := m.writeDB.Exec(
+		"UPDATE {{.PluralName}} SET {{updateSet .Fields}} WHERE id = ?",
+		{{insertArgs .Fields}}, id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	m.cache.Bust("{{.PluralName}}:")
+	return nil
+}
+{{end}}
