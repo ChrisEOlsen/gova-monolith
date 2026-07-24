@@ -62,7 +62,7 @@ You MUST create a task for each of these items and complete them in order:
 
 - Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood independently
 - For each model/page, you should be able to answer: what does it do, how do you use it, and what does it depend on?
-- Map each feature to the MCP scaffold tool that will build it (`scaffold_list`, `create_model`+`create_page`, `scaffold_auth`) — this becomes the plan's task list later
+- Map each feature to the MCP scaffold tool that will build it (`scaffold_resource` for a full-CRUD resource — list/detail/create/update/delete + sort/filter; `scaffold_list` for a read-only list; `create_model`+`create_page` for a custom page; `scaffold_auth` for cookie+bearer auth) — this becomes the plan's task list later
 
 **Working in existing codebases:**
 

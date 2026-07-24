@@ -13,6 +13,7 @@ The AI doesn't write the important code — it calls MCP tools that render deter
 ## Built In, Not Bolted On
 
 - **Auth, done right by default.** Signed HMAC-SHA256 sessions, double-submit CSRF, bcrypt with timing-safe comparison, rate-limited login (5 attempts / 15 min). Scaffold it once with `scaffold_auth`; the security work is already in the template.
+- **Machine-readable API contract.** Every scaffold self-registers into `src/app/api.json` — a manifest of models (with types and nullability) and endpoints, served at `GET /api/v1/_manifest`. Routes are generated from it (`handlers/routes_gen.go`), so `main.go` is never hand-wired. `scaffold_resource` generates full CRUD (list/detail/create/update/delete + `?sort=`/`?filter=`); native clients (see [gova-ios](../gova-ios)) read the manifest instead of reverse-engineering source.
 - **Scaffolds ship with tests.** Every model, handler, and auth endpoint the MCP tools generate comes with a Go test alongside it — CRUD roundtrips, login/CSRF/rate-limit coverage, mobile bearer-token flows. `docker compose exec app go test ./...` runs all of it.
 - **Design intelligence on tap.** The `ui-ux-pro-max` skill brings searchable color palettes, typography pairings, and UX guidelines into the build — no separate design pass required.
 

@@ -36,7 +36,7 @@ Use the `gova-writing-plans` skill.
 - Scaffold-generated code (models, handlers, auth) already has tests from its scaffold call — only plan a test-writing step for hand-customized logic, per `gova-writing-plans` Step 3b
 - One task per feature: `execute_sql` → `scaffold_*` → `add_js_form`
 - Follow the Golden Recipe from `CLAUDE.md` for every feature
-- If a create form exists, plan edit + delete too (CRUD completeness)
+- For a resource that needs create/edit/delete, use `scaffold_resource` (full CRUD, self-registered) rather than `scaffold_list` (read-only). Reserve `scaffold_list` for reference/read-only data.
 - Plan steps scaffold first, then customize. Never plan "implement X handler" — always start with the MCP scaffold tool.
 
 ---

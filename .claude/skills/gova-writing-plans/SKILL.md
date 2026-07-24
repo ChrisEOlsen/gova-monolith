@@ -77,7 +77,7 @@ user data, MCP tool first for every feature file).]
 
 **Files:**
 - Table: `feature_name` (via `execute_sql`)
-- Scaffold: `scaffold_list(name='feature_name', fields=[...])` — generates model, handler, `.html`, `.js`
+- Scaffold: `scaffold_resource(name='feature_name', fields=[...])` for a full-CRUD resource (list/detail/create/update/delete + `?sort=`/`?filter=`), or `scaffold_list(...)` for a read-only list — generates model, handler(s), `.html`, `.js`, and self-registers routes in api.json + routes_gen.go
 - Modify: `src/app/static/js/feature_name.js` — [what customization is needed]
 - Modify: `src/app/handlers/feature_name.go` — [what customization is needed, if any]
 
@@ -91,7 +91,9 @@ user data, MCP tool first for every feature file).]
 
 ```
 execute_sql(sql="CREATE TABLE feature_name (id INTEGER PRIMARY KEY, ...);")
-scaffold_list(name='feature_name', fields=['name:string', 'status:string'])
+# Full CRUD (list/detail/create/update/delete + sort/filter):
+scaffold_resource(name='feature_name', fields=['name:string', 'status:string'])
+# ...or scaffold_list(name='feature_name', fields=[...]) for a read-only list.
 ```
 
 - [ ] **Step 2: Verify the generated files**
