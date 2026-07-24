@@ -277,3 +277,47 @@ func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
 		t.Errorf("handler symbols wrong: %+v", byKey)
 	}
 }
+
+func TestAuthEndpoints_SixWithKinds(t *testing.T) {
+	eps := authEndpoints()
+	if len(eps) != 6 {
+		t.Fatalf("got %d endpoints, want 6", len(eps))
+	}
+	type want struct {
+		handler string
+		kind    string
+		auth    bool
+		deps    int
+	}
+	expect := map[string]want{
+		"POST /api/v1/auth/login":          {"LoginPOST", "auth_login", false, 3},
+		"POST /api/v1/auth/logout":         {"LogoutPOST", "auth_logout", false, 0},
+		"GET /api/v1/auth/me":              {"MeGET", "auth_me", true, 3},
+		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false, 3},
+		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false, 1},
+		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false, 3},
+	}
+	for _, e := range eps {
+		key := e.Method + " " + e.Path
+		w, ok := expect[key]
+		if !ok {
+			t.Errorf("unexpected endpoint %s", key)
+			continue
+		}
+		if e.Handler != w.handler {
+			t.Errorf("%s: handler %q want %q", key, e.Handler, w.handler)
+		}
+		if e.Kind != w.kind {
+			t.Errorf("%s: kind %q want %q", key, e.Kind, w.kind)
+		}
+		if e.Auth != w.auth {
+			t.Errorf("%s: auth %v want %v", key, e.Auth, w.auth)
+		}
+		if len(e.Deps) != w.deps {
+			t.Errorf("%s: deps len %d want %d", key, len(e.Deps), w.deps)
+		}
+		if e.Model != "" {
+			t.Errorf("%s: auth endpoints carry no model, got %q", key, e.Model)
+		}
+	}
+}

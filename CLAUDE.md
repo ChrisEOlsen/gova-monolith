@@ -202,9 +202,8 @@ hand-written `models/query.go`. Create/update validation is coarse (malformed bo
 | `create_page` | Full page: `.html` shell + `.js` module + Go handler stub. Takes `path` (method is always `GET`); self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — same as `create_handler` |
 | `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. — read-only; use `scaffold_resource` for full CRUD | Yes — CRUD + list-handler tests |
 | `scaffold_resource` | Full CRUD: model + list/detail/create/update/delete handlers + list page, all self-registered. List supports `?sort=`/`?filter=` (whitelisted). Table must exist first. Public by default. | Yes — model CRUD + resource handler tests |
-| `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting | Yes — login, rate-limit, CSRF tests |
+| `scaffold_auth` | Full auth — cookie **and** bearer (web + mobile) in one run: users + rate_limits + mobile_tokens tables, login/logout/me + login_token/logout_token/me_token handlers, all 6 routes self-registered. Run scaffold_registration after for a registration endpoint. | Yes — login, rate-limit, CSRF tests |
 | `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
-| `scaffold_mobile_auth` | Token-based auth for mobile clients (iOS/Android) — run after `scaffold_auth` | Yes — token issuance, bearer-auth, rate-limit tests |
 | `add_js_form` | Inject creation form into existing `.js` module | No — JS isn't tested (see Testing below) |
 
 ---

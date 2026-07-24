@@ -233,7 +233,7 @@ func TestRenderRoutes_Deterministic(t *testing.T) {
 // Mobile clients authenticate via Authorization: Bearer <token> and send no
 // gova_session cookie, so RequireAuth (which only checks the session-derived
 // UserID) would 401 them before the handler's own bearer-token check ever
-// runs. handleScaffoldMobileAuth registers MobileMeGET/MobileLogoutDELETE
+// runs. scaffold_auth registers MobileMeGET/MobileLogoutDELETE
 // with Auth:false for exactly this reason — this test proves renderRoutes
 // respects that and doesn't add the wrap, while still confirming a genuine
 // Auth:true endpoint DOES get wrapped (so the test would catch a regression

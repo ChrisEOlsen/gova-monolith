@@ -25,9 +25,8 @@ var templateFS embed.FS
 
 // sqliteDSN matches src/app/db/db.go's Open() pragmas — WAL mode and a
 // busy timeout — so the builder's DDL connections (execute_sql,
-// scaffold_auth, scaffold_mobile_auth) behave consistently with the app
-// container's live connection instead of using SQLite's rollback-journal
-// default.
+// scaffold_auth) behave consistently with the app container's live
+// connection instead of using SQLite's rollback-journal default.
 const sqliteDSN = "file:/data/app.db?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_synchronous=NORMAL"
 
 var (
@@ -502,7 +501,7 @@ func main() {
 	), handleScaffoldResource)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages, and register the auth routes + user model in api.json + routes_gen.go."),
+		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User model, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token) and the login page, all 6 routes self-registered in api.json + routes_gen.go. Run scaffold_registration after for a registration endpoint."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
@@ -517,10 +516,6 @@ func main() {
 		mcp.WithString("title", mcp.Description("Optional form section title")),
 		mcp.WithString("submit_label", mcp.Description("Submit button label (default: Submit)")),
 	), handleAddJSForm)
-
-	s.AddTool(mcp.NewTool("scaffold_mobile_auth",
-		mcp.WithDescription("Add token-based auth endpoints to the Go API for mobile clients (iOS, Android). Idempotent — safe to call from multiple mobile repos. Creates mobile_tokens table and handlers/mobile_auth.go with MobileLoginPOST, MobileLogoutDELETE, MobileMeGET. Requires scaffold_auth to have been run first (users table must exist)."),
-	), handleScaffoldMobileAuth)
 
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatal(err)
@@ -751,6 +746,22 @@ func resourceEndpoints(name string) []Endpoint {
 	}
 }
 
+// authEndpoints returns the six endpoints scaffold_auth registers — the cookie
+// set (login/logout/me) and the bearer set (login_token/logout_token/me_token).
+// The three token endpoints are auth:false: they self-enforce the bearer token
+// in the handler; a session-cookie RequireAuth wrap would 401 them.
+func authEndpoints() []Endpoint {
+	rwc := []string{"read", "write", "cache"}
+	return []Endpoint{
+		{Method: "POST", Path: "/api/v1/auth/login", Handler: "LoginPOST", Deps: rwc, Kind: "auth_login"},
+		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST", Deps: []string{}, Kind: "auth_logout"},
+		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET", Deps: rwc, Auth: true, Kind: "auth_me"},
+		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST", Deps: rwc, Kind: "mobile_login"},
+		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE", Deps: []string{"write"}, Kind: "mobile_logout"},
+		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET", Deps: rwc, Kind: "mobile_me"},
+	}
+}
+
 func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
 	rawFields, _ := req.Params.Arguments["fields"].([]interface{})
@@ -826,12 +837,18 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 	locked_until DATETIME,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (ip)
+);
+CREATE TABLE IF NOT EXISTS mobile_tokens (
+	token_hash TEXT PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	expires_at DATETIME NOT NULL
 );`
 	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return errResult(err.Error()), nil
 	}
 
-	results := []string{"Created tables: users, rate_limits"}
+	results := []string{"Created tables: users, rate_limits, mobile_tokens"}
 	data := newData("user", nil)
 
 	type fileSpec struct{ tmpl, out string }
@@ -842,6 +859,8 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		{"logout_handler.go.tmpl", "/src/app/handlers/logout.go"},
 		{"login_page.html.tmpl", "/src/app/static/pages/login.html"},
 		{"login.js.tmpl", "/src/app/static/js/login.js"},
+		{"mobile_auth_handler.go.tmpl", "/src/app/handlers/mobile_auth.go"},
+		{"mobile_auth_test.go.tmpl", "/src/app/handlers/mobile_auth_test.go"},
 	}
 	for _, spec := range specs {
 		if err := renderToFile(spec.tmpl, spec.out, data); err != nil {
@@ -856,19 +875,11 @@ CREATE TABLE IF NOT EXISTS rate_limits (
 		{Name: "email", Type: "string", Nullable: false},
 		{Name: "created_at", Type: "timestamp", Nullable: false},
 	}}
-	endpoints := []Endpoint{
-		{Method: "POST", Path: "/api/v1/auth/login", Handler: "LoginPOST",
-			Deps: []string{"read", "write", "cache"}, Kind: "auth_login"},
-		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST",
-			Deps: []string{}, Kind: "auth_logout"},
-		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET",
-			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "auth_me"},
-	}
-	if err := updateManifest([]Model{userModel}, endpoints); err != nil {
+	if err := updateManifest([]Model{userModel}, authEndpoints()); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
-	results = append(results, "\nRegistered auth routes (login, logout, me) and the user model in api.json + routes_gen.go.")
+	results = append(results, "\nRegistered full auth — cookie (login, logout, me) and bearer (login_token, logout_token, me_token) — plus the user model in api.json + routes_gen.go.")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -958,67 +969,4 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return errResult(err.Error()), nil
 	}
 	return mcp.NewToolResultText("Form injected into " + targetPath + "\n\n" + runPatternChecks()), nil
-}
-func handleScaffoldMobileAuth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Step 1: Create mobile_tokens table (idempotent — IF NOT EXISTS)
-	// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
-	// timeout so DDL here doesn't collide with the app container's live
-	// connection, and so a fresh db file ends up in WAL mode immediately
-	// rather than waiting for the app to connect first.
-	db, err := sql.Open("sqlite3", sqliteDSN)
-	if err != nil {
-		return errResult(err.Error()), nil
-	}
-	defer db.Close()
-
-	ddl := `CREATE TABLE IF NOT EXISTS mobile_tokens (
-	token_hash TEXT PRIMARY KEY,
-	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-	expires_at DATETIME NOT NULL
-);`
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		return errResult("SQL failed: " + err.Error()), nil
-	}
-
-	results := []string{"Table: mobile_tokens (created or already existed)"}
-
-	// Step 2: Generate handler file — skip if already exists (idempotent)
-	outPath := "/src/app/handlers/mobile_auth.go"
-	if _, statErr := os.Stat(outPath); statErr == nil {
-		results = append(results, "handlers/mobile_auth.go already exists — skipping (idempotent)")
-	} else {
-		if err := renderToFile("mobile_auth_handler.go.tmpl", outPath, TemplateData{}); err != nil {
-			return errResult(err.Error()), nil
-		}
-		results = append(results, "Created: "+outPath)
-
-		testPath := "/src/app/handlers/mobile_auth_test.go"
-		if err := renderToFile("mobile_auth_test.go.tmpl", testPath, TemplateData{}); err != nil {
-			return errResult(err.Error()), nil
-		}
-		results = append(results, "Created: "+testPath)
-	}
-
-	endpoints := []Endpoint{
-		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST",
-			Deps: []string{"read", "write", "cache"}, Kind: "mobile_login"},
-		// Auth: false — bearer-token endpoints self-enforce in the handler;
-		// the session-cookie RequireAuth wrap would 401 them since mobile
-		// clients send no gova_session cookie.
-		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
-			Deps: []string{"write"}, Auth: false, Kind: "mobile_logout"},
-		// Auth: false — bearer-token endpoints self-enforce in the handler;
-		// the session-cookie RequireAuth wrap would 401 them since mobile
-		// clients send no gova_session cookie.
-		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
-			Deps: []string{"read", "write", "cache"}, Auth: false, Kind: "mobile_me"},
-	}
-	if err := updateManifest(nil, endpoints); err != nil {
-		return errResult("manifest update failed: " + err.Error()), nil
-	}
-
-	results = append(results, "\nRegistered mobile auth routes (login_token, logout_token, me_token) in api.json + routes_gen.go.")
-
-	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
