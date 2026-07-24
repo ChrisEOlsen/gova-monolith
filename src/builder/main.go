@@ -501,7 +501,7 @@ func main() {
 	), handleScaffoldResource)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate full auth system: users + rate_limits tables, User model, login/logout/me JSON handlers and HTML pages, and register the auth routes + user model in api.json + routes_gen.go."),
+		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User model, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token) and the login page, all 6 routes self-registered in api.json + routes_gen.go. Run scaffold_registration after for a registration endpoint."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
