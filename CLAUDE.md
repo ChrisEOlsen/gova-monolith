@@ -163,6 +163,18 @@ handler, auth, kind). It is committed source, not a build artifact.
 - **No removal tool.** `api.json` is upsert-only; to remove a resource, edit
   `api.json` and re-run a scaffold, or regenerate.
 
+### Resource list querying (scaffold_resource)
+
+A `scaffold_resource` list endpoint accepts, beyond `?limit=`/`?offset=`:
+- `?sort=<col>` (ascending) or `?sort=-<col>` (descending)
+- `?filter=<col>:<value>` — equality on a column
+
+`<col>` is whitelisted against the model's real columns (`id`, its fields,
+`created_at`); an unknown column returns **422** (`validation_failed`). Filter
+values are always bound parameters. The whitelist/validation lives in the shared,
+hand-written `models/query.go`. Create/update validation is coarse (malformed body
+→ 422, model/DB error → 500); per-field 422 is a deferred enhancement.
+
 ---
 
 ## Infrastructure
@@ -188,7 +200,8 @@ handler, auth, kind). It is committed source, not a build artifact.
 | `create_model` | Data layer; table must exist first. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
 | `create_handler` | Single custom JSON endpoint stub. Takes `method` + `path`; self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
 | `create_page` | Full page: `.html` shell + `.js` module + Go handler stub. Takes `path` (method is always `GET`); self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — same as `create_handler` |
-| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD + list-handler tests |
+| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. — read-only; use `scaffold_resource` for full CRUD | Yes — CRUD + list-handler tests |
+| `scaffold_resource` | Full CRUD: model + list/detail/create/update/delete handlers + list page, all self-registered. List supports `?sort=`/`?filter=` (whitelisted). Table must exist first. Public by default. | Yes — model CRUD + resource handler tests |
 | `scaffold_auth` | User model, login/logout/me JSON endpoints, rate limiting | Yes — login, rate-limit, CSRF tests |
 | `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
 | `scaffold_mobile_auth` | Token-based auth for mobile clients (iOS/Android) — run after `scaffold_auth` | Yes — token issuance, bearer-auth, rate-limit tests |
