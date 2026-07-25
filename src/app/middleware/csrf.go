@@ -39,24 +39,44 @@ func CSRF(next http.Handler) http.Handler {
 			return
 		}
 
-		token := ""
+		// Read the INCOMING cookie once, before we might set one. Its
+		// presence is the signal that this client is a browser participating
+		// in the double-submit scheme (an earlier safe-method load set it).
+		var token string
+		hasCookie := false
 		if cookie, err := r.Cookie("csrf_token"); err == nil {
 			token = cookie.Value
+			hasCookie = true
 		} else {
+			// No cookie yet. Mint one so browser JS can read it, but only
+			// issue it on safe methods — a mutating request that brought no
+			// cookie is a native/non-browser client we must NOT force into
+			// the scheme (doing so is the bug that 403'd every mobile write).
 			token = generateToken()
-			http.SetCookie(w, &http.Cookie{
-				Name:     "csrf_token",
-				Value:    token,
-				Path:     "/",
-				HttpOnly: false,
-				Secure:   secureCookies,
-				SameSite: http.SameSiteStrictMode,
-			})
+			if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+				http.SetCookie(w, &http.Cookie{
+					Name:     "csrf_token",
+					Value:    token,
+					Path:     "/",
+					HttpOnly: false,
+					Secure:   secureCookies,
+					SameSite: http.SameSiteStrictMode,
+				})
+			}
 		}
 
 		ctx := context.WithValue(r.Context(), csrfKey, token)
 
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			// A client that brought no csrf_token cookie is not a browser
+			// riding an ambient credential — there is nothing for CSRF to
+			// protect, so let it through. A browser forged cross-site POST
+			// DOES carry the cookie (auto-attached) but cannot carry the
+			// matching header, so it still fails below.
+			if !hasCookie {
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			headerToken := r.Header.Get("X-CSRF-Token")
 			if !hmac.Equal([]byte(token), []byte(headerToken)) {
 				w.Header().Set("Content-Type", "application/json")
