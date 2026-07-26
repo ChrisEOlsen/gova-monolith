@@ -716,6 +716,9 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	if applyErr != nil {
 		return errResult(applyErr.Error()), nil
 	}
+	if err := validateRefs(fields); err != nil {
+		return errResult(err.Error()), nil
+	}
 	data := newData(name, fields)
 	data.Title = toPascal(toPlural(name))
 
@@ -743,6 +746,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		Handler: toPascal(name) + "ListGET",
 		Deps:    []string{"read", "write", "cache"},
 		Auth:    false, Model: name, Kind: "list",
+		Response: resourceResponse(model, "list"),
 	}
 	if err := updateManifest([]Model{model}, []Endpoint{endpoint}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
@@ -754,19 +758,28 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
-// resourceEndpoints returns the five CRUD endpoints scaffold_resource registers.
+// resourceEndpoints returns the five CRUD endpoints scaffold_resource registers,
+// each carrying the request/response body schema derived from the model + kind.
 // The handler symbols must match resource_handlers.go.tmpl exactly.
-func resourceEndpoints(name string) []Endpoint {
-	p := toPascal(name)
-	plural := toPlural(name)
+func resourceEndpoints(m Model) []Endpoint {
+	p := toPascal(m.Name)
+	plural := toPlural(m.Name)
 	base := "/api/v1/" + plural
 	rwc := []string{"read", "write", "cache"}
+	mk := func(method, path, handler, kind string) Endpoint {
+		return Endpoint{
+			Method: method, Path: path, Handler: handler, Deps: rwc,
+			Model: m.Name, Kind: kind,
+			Request:  resourceRequest(m, kind),
+			Response: resourceResponse(m, kind),
+		}
+	}
 	return []Endpoint{
-		{Method: "GET", Path: base, Handler: p + "ListGET", Deps: rwc, Model: name, Kind: "list"},
-		{Method: "GET", Path: base + "/{id}", Handler: p + "DetailGET", Deps: rwc, Model: name, Kind: "detail"},
-		{Method: "POST", Path: base, Handler: p + "CreatePOST", Deps: rwc, Model: name, Kind: "create"},
-		{Method: "PUT", Path: base + "/{id}", Handler: p + "UpdatePUT", Deps: rwc, Model: name, Kind: "update"},
-		{Method: "DELETE", Path: base + "/{id}", Handler: p + "DeleteDELETE", Deps: rwc, Model: name, Kind: "delete"},
+		mk("GET", base, p+"ListGET", "list"),
+		mk("GET", base+"/{id}", p+"DetailGET", "detail"),
+		mk("POST", base, p+"CreatePOST", "create"),
+		mk("PUT", base+"/{id}", p+"UpdatePUT", "update"),
+		mk("DELETE", base+"/{id}", p+"DeleteDELETE", "delete"),
 	}
 }
 
@@ -803,6 +816,9 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if applyErr != nil {
 		return errResult(applyErr.Error()), nil
 	}
+	if err := validateRefs(fields); err != nil {
+		return errResult(err.Error()), nil
+	}
 	data := newData(name, fields)
 	data.CRUD = true
 	data.Title = toPascal(toPlural(name))
@@ -825,7 +841,7 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 
 	model := fieldsToModel(name, toPlural(name), fields)
-	if err := updateManifest([]Model{model}, resourceEndpoints(name)); err != nil {
+	if err := updateManifest([]Model{model}, resourceEndpoints(model)); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 

@@ -271,6 +271,41 @@ func validateRefsAt(apiPath string, fields []Field) error {
 // validateRefs is the production entry point (against the live manifest path).
 func validateRefs(fields []Field) error { return validateRefsAt(manifestFilePath, fields) }
 
+// writableFields is a model's fields minus the auto columns id and created_at —
+// the body a client sends on create/update.
+func writableFields(m Model) []ModelField {
+	out := make([]ModelField, 0, len(m.Fields))
+	for _, f := range m.Fields {
+		if f.Name == "id" || f.Name == "created_at" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func resourceRequest(m Model, kind string) *BodySchema {
+	switch kind {
+	case "create", "update":
+		return &BodySchema{Shape: "object", Fields: writableFields(m)}
+	default:
+		return nil
+	}
+}
+
+func resourceResponse(m Model, kind string) *BodySchema {
+	switch kind {
+	case "list":
+		return &BodySchema{Shape: "list", Model: m.Name}
+	case "detail", "create", "update":
+		return &BodySchema{Shape: "object", Model: m.Name}
+	case "delete":
+		return &BodySchema{Shape: "object", Fields: []ModelField{{Name: "ok", Type: "boolean"}}}
+	default:
+		return nil
+	}
+}
+
 // updateManifestAt is the transactional core: read, upsert all, and only if
 // every upsert succeeded, write api.json and regenerate routes_gen.go. A
 // conflict returns before any file is touched.

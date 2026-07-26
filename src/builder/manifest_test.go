@@ -263,7 +263,7 @@ func TestWriteThenRead_RoundTrips(t *testing.T) {
 }
 
 func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
-	eps := resourceEndpoints("project")
+	eps := resourceEndpoints(sampleModel())
 	if len(eps) != 5 {
 		t.Fatalf("got %d endpoints, want 5", len(eps))
 	}
@@ -305,6 +305,48 @@ func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
 		byKey["PUT /api/v1/projects/{id}"] != "ProjectUpdatePUT" ||
 		byKey["DELETE /api/v1/projects/{id}"] != "ProjectDeleteDELETE" {
 		t.Errorf("handler symbols wrong: %+v", byKey)
+	}
+}
+
+func TestResourceEndpoints_Schemas(t *testing.T) {
+	m := fieldsToModel("reminder", "reminders", []Field{
+		{Name: "title", Type: "string"},
+		{Name: "remind_at", Type: "string", Format: "datetime-local"},
+	})
+	eps := resourceEndpoints(m)
+	byKind := map[string]Endpoint{}
+	for _, e := range eps {
+		byKind[e.Kind] = e
+	}
+	// create: request is writable fields (no id/created_at), response is the object.
+	cr := byKind["create"]
+	if cr.Request == nil || cr.Request.Shape != "object" {
+		t.Fatalf("create request shape: %+v", cr.Request)
+	}
+	for _, f := range cr.Request.Fields {
+		if f.Name == "id" || f.Name == "created_at" {
+			t.Errorf("create request must not include auto column %q", f.Name)
+		}
+	}
+	if cr.Response == nil || cr.Response.Model != "reminder" || cr.Response.Shape != "object" {
+		t.Errorf("create response should be object/model reminder: %+v", cr.Response)
+	}
+	// list response is a list of the model; delete response is {ok}.
+	if byKind["list"].Response.Shape != "list" {
+		t.Errorf("list response shape: %+v", byKind["list"].Response)
+	}
+	if byKind["delete"].Response.Fields[0].Name != "ok" {
+		t.Errorf("delete response should be {ok}: %+v", byKind["delete"].Response)
+	}
+	// format hint survives into the create request body.
+	var sawFmt bool
+	for _, f := range cr.Request.Fields {
+		if f.Name == "remind_at" && f.Format == "datetime-local" {
+			sawFmt = true
+		}
+	}
+	if !sawFmt {
+		t.Error("create request lost the datetime-local format hint")
 	}
 }
 
