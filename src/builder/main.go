@@ -322,16 +322,40 @@ type Field struct {
 	// Nullable is filled in by applySchema from the real table's
 	// PRAGMA table_info output — never from the caller's field argument.
 	Nullable bool
+	// Format is a semantic hint (datetime-local, date, time, json, email) for a
+	// string-stored column. Ref is the target model name for a foreign key.
+	// Both are declaration metadata layered over the base storage Type.
+	Format string
+	Ref    string
+}
+
+// semanticFormats maps a DSL logical type to its manifest format hint. Each is
+// stored as TEXT and carried in Go as a string — only the semantic differs.
+var semanticFormats = map[string]string{
+	"datetime": "datetime-local",
+	"date":     "date",
+	"time":     "time",
+	"json":     "json",
+	"email":    "email",
 }
 
 func parseFields(raw []string) []Field {
 	fields := make([]Field, 0, len(raw))
 	for _, f := range raw {
-		parts := strings.SplitN(f, ":", 2)
-		if len(parts) == 2 {
-			fields = append(fields, Field{Name: parts[0], Type: parts[1]})
-		} else {
-			fields = append(fields, Field{Name: parts[0], Type: "string"})
+		parts := strings.Split(f, ":")
+		name := parts[0]
+		switch {
+		case len(parts) >= 3 && parts[1] == "ref":
+			// name:ref:<model> -> INTEGER FK column, int64 in Go.
+			fields = append(fields, Field{Name: name, Type: "int", Ref: parts[2]})
+		case len(parts) == 2:
+			if hint, ok := semanticFormats[parts[1]]; ok {
+				fields = append(fields, Field{Name: name, Type: "string", Format: hint})
+			} else {
+				fields = append(fields, Field{Name: name, Type: parts[1]})
+			}
+		default:
+			fields = append(fields, Field{Name: name, Type: "string"})
 		}
 	}
 	return fields

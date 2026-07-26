@@ -158,6 +158,36 @@ func TestFieldsToModel_AddsIDAndCreatedAt(t *testing.T) {
 	}
 }
 
+func TestFieldsToModel_CarriesFormatAndRef(t *testing.T) {
+	fields := []Field{
+		{Name: "remind_at", Type: "string", Format: "datetime-local"},
+		{Name: "category_id", Type: "int", Ref: "log_category"},
+	}
+	m := fieldsToModel("reminder", "reminders", fields)
+	// id, remind_at, category_id, created_at
+	if m.Fields[1].Format != "datetime-local" {
+		t.Errorf("format not carried: %q", m.Fields[1].Format)
+	}
+	if m.Fields[2].References != "log_category" {
+		t.Errorf("references not carried: %q", m.Fields[2].References)
+	}
+}
+
+func TestValidateRefsAt(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "api.json")
+	os.WriteFile(p, []byte(`{"api_version":"1.0.0","models":[{"name":"log_category","table":"log_categories","fields":[]}],"endpoints":[]}`), 0644)
+	if err := validateRefsAt(p, []Field{{Name: "category_id", Type: "int", Ref: "log_category"}}); err != nil {
+		t.Errorf("known ref should pass: %v", err)
+	}
+	if err := validateRefsAt(p, []Field{{Name: "x_id", Type: "int", Ref: "nope"}}); err == nil {
+		t.Error("unknown ref should fail")
+	}
+	if err := validateRefsAt(p, []Field{{Name: "title", Type: "string"}}); err != nil {
+		t.Errorf("no refs should pass: %v", err)
+	}
+}
+
 func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
 	dir := t.TempDir()
 	handlersDir := filepath.Join(dir, "handlers")
