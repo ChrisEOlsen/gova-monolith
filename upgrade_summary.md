@@ -156,3 +156,92 @@ defects that passing tests did not:
   fields in JSON (a shared-template security pass); per-field 422 create/update validation;
   filter operators beyond equality; web edit/delete UI; a possible `auth` enum
   (`session`/`bearer`/`none`) so the manifest is unambiguous for bearer endpoints.
+
+---
+
+## Field-review follow-up arc (Builds A–C)
+
+After the first arc shipped, a real gova-monolith app was translated to a native iOS
+app — and it **worked**. A review of that translation surfaced the friction that
+remained: places where the contract stopped one layer short of what a strictly-typed
+native client needs, plus a template correctness bug and an iOS verification gap. This
+arc closed them, again as sequential spec → plan → subagent-execute → per-task review →
+opus whole-branch review → merge cycles.
+
+| Build | Repo | What it did | Merge |
+|---|---|---|---|
+| A | monolith | CSRF applies only to browser double-submit participants | `ec3be5c` |
+| B-emit | monolith | Manifest carries the full request/response contract | `7c950bf` |
+| B-consume | gova-ios | iOS reads the enriched contract | `734e321` |
+| C | gova-ios | UI smoke test + device-deploy defaults | `975cb78` |
+
+### Problems and how we solved them
+
+**Build A — CSRF assumed every client was a browser.** The double-submit middleware
+force-enrolled every mutating request: with no `csrf_token` cookie it *minted* one and
+demanded a matching header a native client never sends → every write 403'd on a no-auth
+native app. Fix: enforce the header match **only when the request already carries the
+`csrf_token` cookie** (the tell that it's a browser riding an ambient credential). A
+forged cross-site browser POST still carries the cookie and still fails without the
+header; native clients bring no cookie and pass. Net-new `csrf_test.go` (the template had
+zero CSRF coverage).
+
+**Build B-emit — the manifest described field *types* but not the *contract*.** Four
+classes of silent native-client failure the manifest couldn't have prevented:
+`POST` body shapes were unknown; `kind:custom` endpoints were a black hole; a
+`string`-typed `remind_at` was really a `datetime-local`; and child resources exposed no
+relationship. Fixes: a lightweight `BodySchema{shape,model?,fields?}` on every endpoint
+(derived per-kind for scaffolds, author-declared for `create_handler` via
+`request_schema`/`response_schema`/`summary`); `format` hints via semantic DSL types
+(`datetime`/`date`/`time`/`json`/`email`); FK `references` via a `ref:<model>` DSL type,
+validated against existing models; generated create/update **echo the written object**;
+and the app's read-only mirror extended so `/_manifest` serves it all instead of dropping
+it. Auth endpoints deliberately excluded (their contract is fixed and hand-consumed).
+
+**Build B-consume — iOS inferred instead of reading.** The deterministic
+`export_manifest.py` now emits per-field `format`/`references`, per-endpoint schemas, a
+Relationships section, and a Custom-endpoints section, and rewrites Screens-to-generate to
+exclude children from top-level; `CLAUDE.md`/`build.md` teach `/build` to nest child
+resources under the parent detail (filtered by FK), pick controls from `format`, and
+render custom endpoints as actions. Custom endpoints were also removed from the legacy
+Auth-endpoints section.
+
+**Build C — no way to see the class of bug the tool most produces.** The app shipped
+`testTargets: []`, so a navigation-binding bug (a `navigationDestination` that never
+bound, so a row tapped into a blank and unwound) passed unit tests, the build, and every
+grep. Fix: a generic pre-committed XCUITest that walks every tab and detects a real detail
+push by the tapped **row becoming non-hittable** (deliberately *not* a nav-bar-button
+check, which a list's `+` button would false-pass), plus a **required** per-detail-resource
+assertion `/build` adds on top. Device-deploy defaults: ATS `NSAllowsLocalNetworking` and a
+`DEVELOPMENT_TEAM` slot in `project.yml` (the durable source `xcodegen` regenerates from).
+
+### Design principles this arc added
+
+10. **The contract describes shapes, not just types.** A native client *sends* bodies, so
+    the manifest must state request/response shapes — decoding types alone leaves the write
+    path to inference.
+11. **Semantic over storage.** A `string` that is a `datetime-local` must say so; a
+    `format` hint distinguishes it from an RFC3339 timestamp and drives both the control and
+    the wire format (no seconds, no `Z`).
+12. **Declared-not-inferred extends to hand-written code.** Custom endpoints declare their
+    own body + summary rather than being reverse-engineered from Go — the same discipline
+    the scaffolds already had, applied where a human writes the handler.
+13. **Relationships are data.** Foreign keys in the manifest drive nested navigation; a flat
+    list per table is what you get when the relationship isn't published.
+14. **Security defaults must not assume a browser.** CSRF gated on cookie presence and ATS
+    local-networking are calibrated so a native client works out of the box while the browser
+    path stays fully protected.
+15. **Test at the layer the bug lives.** Navigation binding is invisible to unit tests and
+    greps; only a UI test that taps the screen catches it. A generic best-effort smoke test
+    plus *required* per-resource assertions — honest about the generic limitation — beats
+    either alone.
+
+### Follow-ups recorded this arc (non-blocking)
+
+- `hmac.Equal("","")` empty-token CSRF bypass (pre-existing; one-line hardening).
+- `scaffold_registration`'s `POST /register` carries no schema (auth-adjacent; iOS uses the
+  pre-committed `AuthManager`).
+- `parseFields` accepts a malformed `f:ref` (no target model) as a nonsense `ref` type.
+- The generic iOS smoke test can miss a detail screen that itself contains cells — backstopped
+  by the required per-resource assertions.
+- Multi-FK children nest under *every* referenced parent (spec updated to match the emitter).
