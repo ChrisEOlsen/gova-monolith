@@ -32,19 +32,33 @@ type Model struct {
 }
 
 type ModelField struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	Format     string `json:"format,omitempty"`     // semantic hint: datetime-local, date, time, json, email
+	References string `json:"references,omitempty"` // FK target model name
+}
+
+// BodySchema is the closed shape describing an endpoint's request or response
+// body. Either Model (fields inherited from that model) or Fields (inline) is
+// set, never both for a given schema.
+type BodySchema struct {
+	Shape  string       `json:"shape"` // "object" | "list" | "empty"
+	Model  string       `json:"model,omitempty"`
+	Fields []ModelField `json:"fields,omitempty"`
 }
 
 type Endpoint struct {
-	Method  string   `json:"method"`
-	Path    string   `json:"path"`
-	Handler string   `json:"handler"`
-	Deps    []string `json:"deps"`
-	Auth    bool     `json:"auth"`
-	Model   string   `json:"model,omitempty"`
-	Kind    string   `json:"kind"`
+	Method   string      `json:"method"`
+	Path     string      `json:"path"`
+	Handler  string      `json:"handler"`
+	Deps     []string    `json:"deps"`
+	Auth     bool        `json:"auth"`
+	Model    string      `json:"model,omitempty"`
+	Kind     string      `json:"kind"`
+	Summary  string      `json:"summary,omitempty"`
+	Request  *BodySchema `json:"request,omitempty"`
+	Response *BodySchema `json:"response,omitempty"`
 }
 
 // readManifestAt loads a manifest. A missing file is not an error — it is the
@@ -197,10 +211,99 @@ func fieldsToModel(name, table string, fields []Field) Model {
 		if typ == "password" {
 			typ = "string"
 		}
-		out = append(out, ModelField{Name: f.Name, Type: typ, Nullable: f.Nullable})
+		out = append(out, ModelField{
+			Name: f.Name, Type: typ, Nullable: f.Nullable,
+			Format: f.Format, References: f.Ref,
+		})
 	}
 	out = append(out, ModelField{Name: "created_at", Type: "timestamp", Nullable: false})
 	return Model{Name: name, Table: table, Fields: out}
+}
+
+// parseBodySchemaArg parses a create_handler schema argument. Empty input means
+// "no schema declared" (nil, nil). A non-empty value must be valid JSON with a
+// recognized shape.
+func parseBodySchemaArg(raw string) (*BodySchema, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var bs BodySchema
+	if err := json.Unmarshal([]byte(raw), &bs); err != nil {
+		return nil, fmt.Errorf("invalid schema JSON: %w", err)
+	}
+	switch bs.Shape {
+	case "object", "list", "empty":
+	default:
+		return nil, fmt.Errorf("schema shape must be object|list|empty, got %q", bs.Shape)
+	}
+	return &bs, nil
+}
+
+// validateRefsAt fails if any field references a model not yet in the manifest.
+// A dangling reference is a stated-fact violation — the parent must be
+// scaffolded before its child.
+func validateRefsAt(apiPath string, fields []Field) error {
+	need := false
+	for _, f := range fields {
+		if f.Ref != "" {
+			need = true
+		}
+	}
+	if !need {
+		return nil
+	}
+	m, err := readManifestAt(apiPath)
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(m.Models))
+	for _, mm := range m.Models {
+		known[mm.Name] = true
+	}
+	for _, f := range fields {
+		if f.Ref != "" && !known[f.Ref] {
+			return fmt.Errorf("field %q references model %q which is not scaffolded yet — scaffold the parent resource first", f.Name, f.Ref)
+		}
+	}
+	return nil
+}
+
+// validateRefs is the production entry point (against the live manifest path).
+func validateRefs(fields []Field) error { return validateRefsAt(manifestFilePath, fields) }
+
+// writableFields is a model's fields minus the auto columns id and created_at —
+// the body a client sends on create/update.
+func writableFields(m Model) []ModelField {
+	out := make([]ModelField, 0, len(m.Fields))
+	for _, f := range m.Fields {
+		if f.Name == "id" || f.Name == "created_at" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func resourceRequest(m Model, kind string) *BodySchema {
+	switch kind {
+	case "create", "update":
+		return &BodySchema{Shape: "object", Fields: writableFields(m)}
+	default:
+		return nil
+	}
+}
+
+func resourceResponse(m Model, kind string) *BodySchema {
+	switch kind {
+	case "list":
+		return &BodySchema{Shape: "list", Model: m.Name}
+	case "detail", "create", "update":
+		return &BodySchema{Shape: "object", Model: m.Name}
+	case "delete":
+		return &BodySchema{Shape: "object", Fields: []ModelField{{Name: "ok", Type: "boolean"}}}
+	default:
+		return nil
+	}
 }
 
 // updateManifestAt is the transactional core: read, upsert all, and only if

@@ -322,16 +322,40 @@ type Field struct {
 	// Nullable is filled in by applySchema from the real table's
 	// PRAGMA table_info output — never from the caller's field argument.
 	Nullable bool
+	// Format is a semantic hint (datetime-local, date, time, json, email) for a
+	// string-stored column. Ref is the target model name for a foreign key.
+	// Both are declaration metadata layered over the base storage Type.
+	Format string
+	Ref    string
+}
+
+// semanticFormats maps a DSL logical type to its manifest format hint. Each is
+// stored as TEXT and carried in Go as a string — only the semantic differs.
+var semanticFormats = map[string]string{
+	"datetime": "datetime-local",
+	"date":     "date",
+	"time":     "time",
+	"json":     "json",
+	"email":    "email",
 }
 
 func parseFields(raw []string) []Field {
 	fields := make([]Field, 0, len(raw))
 	for _, f := range raw {
-		parts := strings.SplitN(f, ":", 2)
-		if len(parts) == 2 {
-			fields = append(fields, Field{Name: parts[0], Type: parts[1]})
-		} else {
-			fields = append(fields, Field{Name: parts[0], Type: "string"})
+		parts := strings.Split(f, ":")
+		name := parts[0]
+		switch {
+		case len(parts) >= 3 && parts[1] == "ref":
+			// name:ref:<model> -> INTEGER FK column, int64 in Go.
+			fields = append(fields, Field{Name: name, Type: "int", Ref: parts[2]})
+		case len(parts) == 2:
+			if hint, ok := semanticFormats[parts[1]]; ok {
+				fields = append(fields, Field{Name: name, Type: "string", Format: hint})
+			} else {
+				fields = append(fields, Field{Name: name, Type: parts[1]})
+			}
+		default:
+			fields = append(fields, Field{Name: name, Type: "string"})
 		}
 	}
 	return fields
@@ -473,11 +497,14 @@ func main() {
 	), handleCreateModel)
 
 	s.AddTool(mcp.NewTool("create_handler",
-		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after."),
+		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after. Declare request_schema/response_schema (JSON: {\"shape\":\"object|list|empty\",\"model\":\"<name>\"?,\"fields\":[{\"name\",\"type\",\"nullable\",\"format\"}]?}) and a one-line summary so native clients can consume this custom endpoint — a custom endpoint without a declared body is opaque to them."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Handler name in snake_case")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method: GET, POST, PUT, DELETE")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects/{id}/archive")),
 		mcp.WithBoolean("auth_required", mcp.Description("Require authentication — enforced by a RequireAuth route wrap")),
+		mcp.WithString("request_schema", mcp.Description("JSON BodySchema for the request body (omit for GET/no-body endpoints)")),
+		mcp.WithString("response_schema", mcp.Description("JSON BodySchema for the response data")),
+		mcp.WithString("summary", mcp.Description("One-line description of what this endpoint does")),
 	), handleCreateHandler)
 
 	s.AddTool(mcp.NewTool("create_page",
@@ -603,11 +630,22 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	method, _ := req.Params.Arguments["method"].(string)
 	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
+	requestSchema, _ := req.Params.Arguments["request_schema"].(string)
+	responseSchema, _ := req.Params.Arguments["response_schema"].(string)
+	summary, _ := req.Params.Arguments["summary"].(string)
 	if !isSafeIdent(name) {
 		return errResult("invalid handler name"), nil
 	}
 	if !strings.HasPrefix(path, "/api/v1/") {
 		return errResult("path must start with /api/v1/"), nil
+	}
+	reqSchema, err := parseBodySchemaArg(requestSchema)
+	if err != nil {
+		return errResult("request_schema: " + err.Error()), nil
+	}
+	respSchema, err := parseBodySchemaArg(responseSchema)
+	if err != nil {
+		return errResult("response_schema: " + err.Error()), nil
 	}
 	data := newData(name, nil)
 	data.Method = strings.ToUpper(method)
@@ -623,6 +661,7 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		Handler: toPascal(name) + strings.ToUpper(method),
 		Deps:    []string{"read", "write", "cache"},
 		Auth:    authRequired, Kind: "custom",
+		Summary: summary, Request: reqSchema, Response: respSchema,
 	}
 	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
@@ -692,6 +731,9 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	if applyErr != nil {
 		return errResult(applyErr.Error()), nil
 	}
+	if err := validateRefs(fields); err != nil {
+		return errResult(err.Error()), nil
+	}
 	data := newData(name, fields)
 	data.Title = toPascal(toPlural(name))
 
@@ -719,6 +761,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		Handler: toPascal(name) + "ListGET",
 		Deps:    []string{"read", "write", "cache"},
 		Auth:    false, Model: name, Kind: "list",
+		Response: resourceResponse(model, "list"),
 	}
 	if err := updateManifest([]Model{model}, []Endpoint{endpoint}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
@@ -730,19 +773,28 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
-// resourceEndpoints returns the five CRUD endpoints scaffold_resource registers.
+// resourceEndpoints returns the five CRUD endpoints scaffold_resource registers,
+// each carrying the request/response body schema derived from the model + kind.
 // The handler symbols must match resource_handlers.go.tmpl exactly.
-func resourceEndpoints(name string) []Endpoint {
-	p := toPascal(name)
-	plural := toPlural(name)
+func resourceEndpoints(m Model) []Endpoint {
+	p := toPascal(m.Name)
+	plural := toPlural(m.Name)
 	base := "/api/v1/" + plural
 	rwc := []string{"read", "write", "cache"}
+	mk := func(method, path, handler, kind string) Endpoint {
+		return Endpoint{
+			Method: method, Path: path, Handler: handler, Deps: rwc,
+			Model: m.Name, Kind: kind,
+			Request:  resourceRequest(m, kind),
+			Response: resourceResponse(m, kind),
+		}
+	}
 	return []Endpoint{
-		{Method: "GET", Path: base, Handler: p + "ListGET", Deps: rwc, Model: name, Kind: "list"},
-		{Method: "GET", Path: base + "/{id}", Handler: p + "DetailGET", Deps: rwc, Model: name, Kind: "detail"},
-		{Method: "POST", Path: base, Handler: p + "CreatePOST", Deps: rwc, Model: name, Kind: "create"},
-		{Method: "PUT", Path: base + "/{id}", Handler: p + "UpdatePUT", Deps: rwc, Model: name, Kind: "update"},
-		{Method: "DELETE", Path: base + "/{id}", Handler: p + "DeleteDELETE", Deps: rwc, Model: name, Kind: "delete"},
+		mk("GET", base, p+"ListGET", "list"),
+		mk("GET", base+"/{id}", p+"DetailGET", "detail"),
+		mk("POST", base, p+"CreatePOST", "create"),
+		mk("PUT", base+"/{id}", p+"UpdatePUT", "update"),
+		mk("DELETE", base+"/{id}", p+"DeleteDELETE", "delete"),
 	}
 }
 
@@ -779,6 +831,9 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if applyErr != nil {
 		return errResult(applyErr.Error()), nil
 	}
+	if err := validateRefs(fields); err != nil {
+		return errResult(err.Error()), nil
+	}
 	data := newData(name, fields)
 	data.CRUD = true
 	data.Title = toPascal(toPlural(name))
@@ -801,7 +856,7 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 
 	model := fieldsToModel(name, toPlural(name), fields)
-	if err := updateManifest([]Model{model}, resourceEndpoints(name)); err != nil {
+	if err := updateManifest([]Model{model}, resourceEndpoints(model)); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 

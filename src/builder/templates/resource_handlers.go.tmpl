@@ -85,7 +85,12 @@ func {{.PascalName}}CreatePOST(readDB, writeDB *sql.DB, appCache *cache.Cache) h
 			jsonError(w, "failed to create", 500)
 			return
 		}
-		jsonOK(w, map[string]int64{"id": id})
+		item, err := model.Find(id)
+		if err != nil {
+			jsonError(w, "created but failed to load", 500)
+			return
+		}
+		jsonOK(w, item)
 	}
 }
 
@@ -111,7 +116,12 @@ func {{.PascalName}}UpdatePUT(readDB, writeDB *sql.DB, appCache *cache.Cache) ht
 			jsonError(w, "failed to update", 500)
 			return
 		}
-		jsonOK(w, map[string]int64{"id": id})
+		item, err := model.Find(id)
+		if err != nil {
+			jsonError(w, "updated but failed to load", 500)
+			return
+		}
+		jsonOK(w, item)
 	}
 }
 

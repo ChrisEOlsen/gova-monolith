@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +18,20 @@ func writeTempManifest(t *testing.T, body string) string {
 		t.Fatalf("write temp manifest: %v", err)
 	}
 	return p
+}
+
+// writeTempManifestDir writes body to a temp dir's api.json and Chdir's the
+// test into that dir, so ManifestGET's hardcoded "./api.json" read picks it
+// up. Returns the temp dir.
+func writeTempManifestDir(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "api.json")
+	if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+		t.Fatalf("write temp manifest: %v", err)
+	}
+	t.Chdir(dir)
+	return dir
 }
 
 func TestLoadManifest_Present(t *testing.T) {
@@ -66,5 +81,24 @@ func TestManifestGET_ServesEnvelope(t *testing.T) {
 	}
 	if !body.OK || body.Data.APIVersion == "" {
 		t.Errorf("unexpected manifest envelope: %s", rec.Body.String())
+	}
+}
+
+func TestManifestGET_ServesEnrichedContract(t *testing.T) {
+	writeTempManifestDir(t, `{"api_version":"1.0.0","hash":"sha256:x","models":[
+	  {"name":"reminder","table":"reminders","fields":[
+	    {"name":"remind_at","type":"string","nullable":false,"format":"datetime-local"},
+	    {"name":"category_id","type":"int","nullable":false,"references":"log_category"}]}],
+	  "endpoints":[
+	    {"method":"POST","path":"/api/v1/reminders","handler":"ReminderCreatePOST","deps":["read"],"auth":false,"kind":"create",
+	     "request":{"shape":"object","fields":[{"name":"remind_at","type":"string","nullable":false,"format":"datetime-local"}]},
+	     "response":{"shape":"object","model":"reminder"}}]}`)
+	rec := httptest.NewRecorder()
+	ManifestGET().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/_manifest", nil))
+	body := rec.Body.String()
+	for _, want := range []string{`"format":"datetime-local"`, `"references":"log_category"`, `"request"`, `"response"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("served manifest missing %s\nbody: %s", want, body)
+		}
 	}
 }

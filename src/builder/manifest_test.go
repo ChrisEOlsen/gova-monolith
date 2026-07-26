@@ -158,6 +158,36 @@ func TestFieldsToModel_AddsIDAndCreatedAt(t *testing.T) {
 	}
 }
 
+func TestFieldsToModel_CarriesFormatAndRef(t *testing.T) {
+	fields := []Field{
+		{Name: "remind_at", Type: "string", Format: "datetime-local"},
+		{Name: "category_id", Type: "int", Ref: "log_category"},
+	}
+	m := fieldsToModel("reminder", "reminders", fields)
+	// id, remind_at, category_id, created_at
+	if m.Fields[1].Format != "datetime-local" {
+		t.Errorf("format not carried: %q", m.Fields[1].Format)
+	}
+	if m.Fields[2].References != "log_category" {
+		t.Errorf("references not carried: %q", m.Fields[2].References)
+	}
+}
+
+func TestValidateRefsAt(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "api.json")
+	os.WriteFile(p, []byte(`{"api_version":"1.0.0","models":[{"name":"log_category","table":"log_categories","fields":[]}],"endpoints":[]}`), 0644)
+	if err := validateRefsAt(p, []Field{{Name: "category_id", Type: "int", Ref: "log_category"}}); err != nil {
+		t.Errorf("known ref should pass: %v", err)
+	}
+	if err := validateRefsAt(p, []Field{{Name: "x_id", Type: "int", Ref: "nope"}}); err == nil {
+		t.Error("unknown ref should fail")
+	}
+	if err := validateRefsAt(p, []Field{{Name: "title", Type: "string"}}); err != nil {
+		t.Errorf("no refs should pass: %v", err)
+	}
+}
+
 func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
 	dir := t.TempDir()
 	handlersDir := filepath.Join(dir, "handlers")
@@ -233,7 +263,7 @@ func TestWriteThenRead_RoundTrips(t *testing.T) {
 }
 
 func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
-	eps := resourceEndpoints("project")
+	eps := resourceEndpoints(sampleModel())
 	if len(eps) != 5 {
 		t.Fatalf("got %d endpoints, want 5", len(eps))
 	}
@@ -275,6 +305,48 @@ func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
 		byKey["PUT /api/v1/projects/{id}"] != "ProjectUpdatePUT" ||
 		byKey["DELETE /api/v1/projects/{id}"] != "ProjectDeleteDELETE" {
 		t.Errorf("handler symbols wrong: %+v", byKey)
+	}
+}
+
+func TestResourceEndpoints_Schemas(t *testing.T) {
+	m := fieldsToModel("reminder", "reminders", []Field{
+		{Name: "title", Type: "string"},
+		{Name: "remind_at", Type: "string", Format: "datetime-local"},
+	})
+	eps := resourceEndpoints(m)
+	byKind := map[string]Endpoint{}
+	for _, e := range eps {
+		byKind[e.Kind] = e
+	}
+	// create: request is writable fields (no id/created_at), response is the object.
+	cr := byKind["create"]
+	if cr.Request == nil || cr.Request.Shape != "object" {
+		t.Fatalf("create request shape: %+v", cr.Request)
+	}
+	for _, f := range cr.Request.Fields {
+		if f.Name == "id" || f.Name == "created_at" {
+			t.Errorf("create request must not include auto column %q", f.Name)
+		}
+	}
+	if cr.Response == nil || cr.Response.Model != "reminder" || cr.Response.Shape != "object" {
+		t.Errorf("create response should be object/model reminder: %+v", cr.Response)
+	}
+	// list response is a list of the model; delete response is {ok}.
+	if byKind["list"].Response.Shape != "list" {
+		t.Errorf("list response shape: %+v", byKind["list"].Response)
+	}
+	if byKind["delete"].Response.Fields[0].Name != "ok" {
+		t.Errorf("delete response should be {ok}: %+v", byKind["delete"].Response)
+	}
+	// format hint survives into the create request body.
+	var sawFmt bool
+	for _, f := range cr.Request.Fields {
+		if f.Name == "remind_at" && f.Format == "datetime-local" {
+			sawFmt = true
+		}
+	}
+	if !sawFmt {
+		t.Error("create request lost the datetime-local format hint")
 	}
 }
 
