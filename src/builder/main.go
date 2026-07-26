@@ -497,11 +497,14 @@ func main() {
 	), handleCreateModel)
 
 	s.AddTool(mcp.NewTool("create_handler",
-		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after."),
+		mcp.WithDescription("Generate a single JSON handler in handlers/name.go AND register its route in api.json + routes_gen.go. Implement the TODO logic after. Declare request_schema/response_schema (JSON: {\"shape\":\"object|list|empty\",\"model\":\"<name>\"?,\"fields\":[{\"name\",\"type\",\"nullable\",\"format\"}]?}) and a one-line summary so native clients can consume this custom endpoint — a custom endpoint without a declared body is opaque to them."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Handler name in snake_case")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method: GET, POST, PUT, DELETE")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects/{id}/archive")),
 		mcp.WithBoolean("auth_required", mcp.Description("Require authentication — enforced by a RequireAuth route wrap")),
+		mcp.WithString("request_schema", mcp.Description("JSON BodySchema for the request body (omit for GET/no-body endpoints)")),
+		mcp.WithString("response_schema", mcp.Description("JSON BodySchema for the response data")),
+		mcp.WithString("summary", mcp.Description("One-line description of what this endpoint does")),
 	), handleCreateHandler)
 
 	s.AddTool(mcp.NewTool("create_page",
@@ -627,11 +630,22 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	method, _ := req.Params.Arguments["method"].(string)
 	path, _ := req.Params.Arguments["path"].(string)
 	authRequired, _ := req.Params.Arguments["auth_required"].(bool)
+	requestSchema, _ := req.Params.Arguments["request_schema"].(string)
+	responseSchema, _ := req.Params.Arguments["response_schema"].(string)
+	summary, _ := req.Params.Arguments["summary"].(string)
 	if !isSafeIdent(name) {
 		return errResult("invalid handler name"), nil
 	}
 	if !strings.HasPrefix(path, "/api/v1/") {
 		return errResult("path must start with /api/v1/"), nil
+	}
+	reqSchema, err := parseBodySchemaArg(requestSchema)
+	if err != nil {
+		return errResult("request_schema: " + err.Error()), nil
+	}
+	respSchema, err := parseBodySchemaArg(responseSchema)
+	if err != nil {
+		return errResult("response_schema: " + err.Error()), nil
 	}
 	data := newData(name, nil)
 	data.Method = strings.ToUpper(method)
@@ -647,6 +661,7 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		Handler: toPascal(name) + strings.ToUpper(method),
 		Deps:    []string{"read", "write", "cache"},
 		Auth:    authRequired, Kind: "custom",
+		Summary: summary, Request: reqSchema, Response: respSchema,
 	}
 	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
