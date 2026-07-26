@@ -67,14 +67,14 @@ func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 		t.Errorf("detail bad id: got %d, want 422", rec.Code)
 	}
 
-	// Create.
-	if rec := do(http.MethodPost, "/api/v1/{{.PluralName}}", `{{testJSON .Fields}}`); rec.Code != 200 {
-		t.Errorf("create: got %d, body %s", rec.Code, rec.Body.String())
+	// Create: echoes the full written object (created_at only appears on the object).
+	if rec := do(http.MethodPost, "/api/v1/{{.PluralName}}", `{{testJSON .Fields}}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"created_at"`) {
+		t.Errorf("create: want 200 with echoed object, got %d, body %s", rec.Code, rec.Body.String())
 	}
 
-	// Update: existing and missing.
-	if rec := do(http.MethodPut, "/api/v1/{{.PluralName}}/1", `{{testJSON .Fields}}`); rec.Code != 200 {
-		t.Errorf("update: got %d, body %s", rec.Code, rec.Body.String())
+	// Update: echoes the full written object.
+	if rec := do(http.MethodPut, "/api/v1/{{.PluralName}}/1", `{{testJSON .Fields}}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"created_at"`) {
+		t.Errorf("update: want 200 with echoed object, got %d, body %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(http.MethodPut, "/api/v1/{{.PluralName}}/999999", `{{testJSON .Fields}}`); rec.Code != 404 {
 		t.Errorf("update missing: got %d, want 404", rec.Code)
