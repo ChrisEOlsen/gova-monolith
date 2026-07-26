@@ -24,19 +24,31 @@ type Model struct {
 }
 
 type ModelField struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable"`
+	Format     string `json:"format,omitempty"`
+	References string `json:"references,omitempty"`
+}
+
+// BodySchema mirrors the builder's request/response schema shape. Read-only.
+type BodySchema struct {
+	Shape  string       `json:"shape"`
+	Model  string       `json:"model,omitempty"`
+	Fields []ModelField `json:"fields,omitempty"`
 }
 
 type Endpoint struct {
-	Method  string   `json:"method"`
-	Path    string   `json:"path"`
-	Handler string   `json:"handler"`
-	Deps    []string `json:"deps"`
-	Auth    bool     `json:"auth"`
-	Model   string   `json:"model,omitempty"`
-	Kind    string   `json:"kind"`
+	Method   string      `json:"method"`
+	Path     string      `json:"path"`
+	Handler  string      `json:"handler"`
+	Deps     []string    `json:"deps"`
+	Auth     bool        `json:"auth"`
+	Model    string      `json:"model,omitempty"`
+	Kind     string      `json:"kind"`
+	Summary  string      `json:"summary,omitempty"`
+	Request  *BodySchema `json:"request,omitempty"`
+	Response *BodySchema `json:"response,omitempty"`
 }
 
 // loadManifest reads and decodes the manifest. A missing or unreadable file
