@@ -53,7 +53,9 @@ Use the least powerful model that can handle each role to conserve cost and incr
 
 **Always specify the model explicitly when dispatching a subagent.** An omitted model inherits your session's model — often the most capable and most expensive — which silently defeats this section.
 
-**Turn count beats token price.** Wall-clock and context cost scale with how many turns a subagent takes, and the cheapest models routinely take 2-3× the turns on multi-step work — costing more overall. Use a mid-tier model as the floor for reviewers and for implementers working from prose descriptions. When the task's plan text contains the complete MCP tool call and exact customization code, the implementation is transcription plus verification: use the cheapest tier for that implementer.
+**Turn count beats token price.** Wall-clock and context cost scale with how many turns a subagent takes, and the cheapest models routinely take 2-3× the turns on multi-step work — costing more overall. Use a mid-tier model as the floor for reviewers and for implementers.
+
+Plans specify contracts, not bodies (see `gova-writing-plans` § Specify Contracts, Not Bodies): the task text carries the exact MCP tool call, exact paths, and the exact names and literals crossing task boundaries, but the implementer writes the customization code itself. Budget for that — this is authoring, not transcription, so the cheapest tier is only appropriate for a task that is purely a scaffold call plus verification with no customization step. Mid-tier is the default for any task with a Step 3.
 
 ## Handling Implementer Status
 

@@ -21,8 +21,8 @@ Read `.env`. Verify `SESSION_SECRET` is set to something other than the placehol
 
 Use the `gova-brainstorm` skill with the contents of `SEED.md` as input.
 
-- Clarify the app's features and data model
-- Confirm auth requirements, resource types, external integrations
+- Run its **Scale Gate** first and state the classification. A full `/build` from a fresh `SEED.md` is normally Standard or Large. An incremental change to an existing app is often Small — on that path there is no spec document, and Step 3's plan is the only written artifact.
+- Batch clarifying questions with `AskUserQuestion` — features and data model in one call, auth/resources/integrations in the next. Do not ask one question per message.
 - Wait for developer approval before proceeding
 
 ---
@@ -33,6 +33,7 @@ Use the `gova-writing-plans` skill.
 
 **Mandatory constraints for the plan:**
 - Tasks are **MCP tool calls**, not Go code or JS written by hand
+- The plan specifies contracts, not bodies — exact MCP tool calls, exact paths, and exact cross-task names and literals go in verbatim; customization bodies are described and the implementer writes them once. Do not pre-write the implementation into the plan.
 - Scaffold-generated code (models, handlers, auth) already has tests from its scaffold call — only plan a test-writing step for hand-customized logic, per `gova-writing-plans` Step 3b
 - One task per feature: `execute_sql` → `scaffold_*` → `add_js_form`
 - Follow the Golden Recipe from `CLAUDE.md` for every feature
