@@ -23,4 +23,4 @@
 - [ ] Other: ___
 
 ## Design Notes
-[Any specific UI or UX requirements. Otherwise the AI will follow the ui-ux-pro-max skill's guidance.]
+[Any specific UI or UX requirements — brand colors, a reference product, a layout you have in mind. Leave blank and the build applies its default design bar: a slick, professional interface with a deliberate palette, real typographic hierarchy, and smooth animated interactions. See `/build` Step 5.]

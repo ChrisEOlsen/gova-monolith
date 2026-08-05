@@ -44,7 +44,7 @@ You MUST create a task for each of these items and complete them in order. Items
 8. **[Standard+] User reviews written spec** — ask user to review the spec file before proceeding
 9. **Transition to implementation** — invoke the `gova-writing-plans` skill to create an implementation plan
 
-**The terminal state is invoking `gova-writing-plans`.** Do NOT invoke `ui-ux-pro-max` or any other implementation skill yet. The ONLY skill you invoke after brainstorming is `gova-writing-plans`.
+**The terminal state is invoking `gova-writing-plans`.** Do NOT start implementation work, make visual design decisions, or invoke any other skill yet. Visual polish is set by the design bar in `/build` Step 5 and happens at implementation time. The ONLY skill you invoke after brainstorming is `gova-writing-plans`.
 
 ## The Process
 

@@ -81,7 +81,14 @@ Subagents must confirm at the start of each task:
 - Follow the Golden Recipe from CLAUDE.md
 - Never write raw SQL in handler files — use model methods only
 - CSS recompiles automatically on `docker compose restart app` — restart once after a JS/HTML-only UI pass with no Go changes
-- Use the `ui-ux-pro-max` skill before any UI work — this project's stack is `html-tailwind` (vanilla JS + Tailwind, no framework), not React/Vue/etc.; pass `--stack html-tailwind` to its search CLI
+- **Design bar — build it slick.** Every page should look like a professionally designed product, not a scaffold with default styling. Concretely:
+  - **Palette:** one accent color used deliberately, a neutral scale for everything else. Not five competing colors, not raw Tailwind defaults everywhere.
+  - **Type:** real hierarchy through weight and size together, not size alone. Tight line-height on headings, comfortable on body.
+  - **Spacing:** one consistent scale, applied generously. Cramped layouts are the single clearest tell of a scaffolded UI.
+  - **Motion:** smooth and purposeful. Transitions on hover, focus, and state changes; entrance animation on lists, modals, and toasts; nothing that jitters, blocks input, or animates on every render. Wrap it in `@media (prefers-reduced-motion: reduce)` so it can be turned off.
+  - **Interaction states:** visible hover, focus, active, and disabled states on everything interactive. Focus rings stay — style them, don't remove them.
+  - **Empty, loading, and error states are designed, not blank.** A list with no rows shows something intentional.
+  - Tailwind utilities plus CSS transitions cover all of this. No framework, no CDN, no JS animation library (Critical Constraint 4).
 - Use `context7` MCP for any external API documentation
 - Do not add manual cache calls to model methods — caching is automatic
 - JS safety: NEVER use `element.innerHTML = userValue` (XSS). ALWAYS use `element.textContent` for user-supplied text. ALWAYS use `createElement` for structured HTML.
@@ -127,7 +134,7 @@ Verify, with evidence for each:
 - **CRUD:** If a create form exists, do edit and delete exist?
 - **Architecture:** Tables via `execute_sql`? Models via `create_model`? No raw SQL in handlers? JS never uses `innerHTML` with user data? (Grep for `innerHTML` and `db.Query`/`db.Exec` outside models/ to confirm, don't assume the rule held.)
 - **Tests:** Run `docker compose exec app go test ./...` now and read the output — all passing? A failing test blocks completion the same as a failing build.
-- **Design:** `ui-ux-pro-max` invoked? Titles set? Mobile-responsive?
+- **Design:** Does it meet the Step 5 design bar — deliberate palette, real type hierarchy, consistent spacing, smooth transitions on interactive elements, designed empty/loading states? Titles set? Mobile-responsive? (Load the pages and look; don't infer from the class names.)
 - **App:** Run `docker compose logs app` now and read the output — no errors?
 - **Environment:** New env vars documented in `env.example`? No hardcoded secrets?
 
