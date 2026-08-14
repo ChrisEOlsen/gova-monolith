@@ -421,8 +421,21 @@ func TestResourceHandlersTestTemplate_ValidGo(t *testing.T) {
 	renderAndParse(t, "resource_handlers_test.go.tmpl", data)
 }
 
-func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {
-	out, err := renderRoutes(routeManifest())
+// TestRenderRoutes_MatchesCommittedManifest asserts that routes_gen.go is in
+// sync with the api.json sitting next to it.
+//
+// This used to render from an EMPTY manifest and demand byte-equality with the
+// committed file, which is true only in a pristine template: the instant a
+// project ran any scaffold, routes_gen.go held real routes and this test was
+// red forever. Every generated app inherited a failing src/builder suite, which
+// teaches people to ignore it. Sync between manifest and generated file is the
+// property actually worth asserting, and it holds in every project.
+func TestRenderRoutes_MatchesCommittedManifest(t *testing.T) {
+	m, err := readManifestAt("../app/api.json")
+	if err != nil {
+		t.Fatalf("read committed api.json: %v", err)
+	}
+	out, err := renderRoutes(m)
 	if err != nil {
 		t.Fatalf("renderRoutes: %v", err)
 	}
@@ -431,7 +444,9 @@ func TestRenderRoutes_EmptyMatchesCommittedFile(t *testing.T) {
 		t.Fatalf("read committed routes_gen.go: %v", err)
 	}
 	if string(committed) != out {
-		t.Errorf("committed routes_gen.go is not byte-identical to renderRoutes(empty).\n"+
-			"Regenerate it to match.\n---committed---\n%s\n---generated---\n%s", committed, out)
+		t.Errorf("handlers/routes_gen.go has drifted from api.json.\n"+
+			"Re-run any scaffold tool (or regenerate) to bring them back in sync.\n"+
+			"---committed---\n%s\n---rendered from api.json---\n%s", committed, out)
 	}
 }
+
