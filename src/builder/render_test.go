@@ -213,6 +213,24 @@ func TestModelTestTemplate_NullableIsValidGo(t *testing.T) {
 	renderAndParse(t, "model_test.go.tmpl", data)
 }
 
+// TestUserModelTemplate_RateLimitBucketDecays guards the sliding-window reset
+// in RecordFailedAttempt. Without it the limiter is a lifetime quota and any IP
+// that ever accumulates 5 failures is capped at one attempt per 15 minutes for
+// good — an availability failure on a shared NAT, not a nuisance.
+func TestUserModelTemplate_RateLimitBucketDecays(t *testing.T) {
+	out := renderAndParse(t, "user_model.go.tmpl", newData("user", nil))
+
+	if !strings.Contains(out, "attempts = CASE WHEN updated_at < datetime('now', '-15 minutes')") {
+		t.Errorf("RecordFailedAttempt must reset attempts once the window lapses:\n%s", out)
+	}
+	if !strings.Contains(out, "THEN 1 ELSE attempts + 1 END") {
+		t.Errorf("the decayed branch must restart the count at 1:\n%s", out)
+	}
+	if !strings.Contains(out, "WHEN updated_at < datetime('now', '-15 minutes') THEN NULL") {
+		t.Errorf("a decayed bucket must also clear its stale locked_until:\n%s", out)
+	}
+}
+
 func TestHandlerTemplate_NoInlineAuthCheck(t *testing.T) {
 	data := newData("archive_project", nil)
 	data.Method = "POST"

@@ -97,6 +97,76 @@ func TestLoginPOST_RateLimited(t *testing.T) {
 	}
 }
 
+// TestRecordFailedAttempt_BucketDecays proves the rate-limit bucket is a
+// sliding window rather than a lifetime quota.
+//
+// TestLoginPOST_RateLimited above passes against a counter that never decays,
+// which is why it is not enough on its own. What separates the two is what
+// happens once the window lapses: the bucket must be usable again AND must not
+// re-lock on the very next failure.
+func TestRecordFailedAttempt_BucketDecays(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	const ip = "203.0.113.9"
+
+	for i := 0; i < 5; i++ {
+		userModel.RecordFailedAttempt(ip)
+	}
+	locked, err := userModel.IsRateLimited(ip)
+	if err != nil {
+		t.Fatalf("IsRateLimited: %v", err)
+	}
+	if !locked {
+		t.Fatal("5 failures inside the window should lock the bucket")
+	}
+
+	// Age the bucket past the window. Rewriting the row's own clock is the
+	// only way to exercise a 15-minute window without waiting 15 minutes —
+	// this is a test fixture, not handler code.
+	if _, err := testDB.Write.Exec(`
+		UPDATE rate_limits
+		SET updated_at = datetime('now', '-16 minutes'),
+		    locked_until = datetime('now', '-1 minutes')
+		WHERE ip = ?`, ip); err != nil {
+		t.Fatalf("age bucket: %v", err)
+	}
+
+	// The lock itself has lapsed, so the next attempt gets through...
+	locked, err = userModel.IsRateLimited(ip)
+	if err != nil {
+		t.Fatalf("IsRateLimited: %v", err)
+	}
+	if locked {
+		t.Fatal("the lock should have lapsed once its 15 minutes were up")
+	}
+
+	// ...and recording that attempt's failure must RESTART the count, not
+	// resume at 6. A never-decaying counter re-locks right here.
+	userModel.RecordFailedAttempt(ip)
+	locked, err = userModel.IsRateLimited(ip)
+	if err != nil {
+		t.Fatalf("IsRateLimited: %v", err)
+	}
+	if locked {
+		t.Fatal("bucket re-locked on the first failure after the window — attempts never decay, so this IP is capped at one attempt per 15 minutes forever")
+	}
+
+	// Three more failures (4 in the fresh window) must still be allowed; only
+	// the fifth locks again. This is what proves the reset was to 1 and not to
+	// some other still-nearly-capped value.
+	for i := 0; i < 3; i++ {
+		userModel.RecordFailedAttempt(ip)
+	}
+	if locked, _ := userModel.IsRateLimited(ip); locked {
+		t.Fatal("4 failures in a fresh window must not lock")
+	}
+	userModel.RecordFailedAttempt(ip)
+	if locked, _ := userModel.IsRateLimited(ip); !locked {
+		t.Fatal("the fifth failure in a fresh window must lock again")
+	}
+}
+
 func TestLoginPOST_CSRFRejectsMismatchedToken(t *testing.T) {
 	testDB := db.OpenTest(t, authTestSchema)
 	appCache := cache.New()

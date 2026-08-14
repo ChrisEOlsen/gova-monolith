@@ -90,14 +90,33 @@ func (m *UserModel) IsRateLimited(ip string) (bool, error) {
 	return false, nil
 }
 
+// RecordFailedAttempt counts one failure against ip's bucket, locking the
+// bucket for 15 minutes once it reaches 5 failures within a 15-minute window.
+//
+// The window is the point. An attempts counter that only ever increments makes
+// the limit a LIFETIME quota: five failures at any time in the past leave
+// attempts at 5, so the moment a lock lapses the next attempt re-arms it at 6,
+// and that IP is capped at one attempt per 15 minutes forever. Behind a shared
+// NAT or carrier CGNAT that is every user on the address. So a bucket whose
+// last failure predates the window decays — this failure starts a fresh count
+// of 1 and clears any stale lock.
+//
+// Bare column names on the right of DO UPDATE SET read the pre-update row, so
+// `updated_at` and `attempts` below are the stored values, not the new ones.
+// updated_at and datetime('now', ...) are both SQLite's own
+// 'YYYY-MM-DD HH:MM:SS' UTC text, so the comparison is a like-for-like
+// lexicographic one.
 func (m *UserModel) RecordFailedAttempt(ip string) {
 	_, _ = m.writeDB.Exec(`
 		INSERT INTO rate_limits (ip, attempts, locked_until, updated_at)
 		VALUES (?, 1, NULL, CURRENT_TIMESTAMP)
 		ON CONFLICT(ip) DO UPDATE SET
-			attempts = attempts + 1,
-			locked_until = CASE WHEN attempts + 1 >= 5
-				THEN datetime('now', '+15 minutes') ELSE locked_until END,
+			attempts = CASE WHEN updated_at < datetime('now', '-15 minutes')
+				THEN 1 ELSE attempts + 1 END,
+			locked_until = CASE
+				WHEN updated_at < datetime('now', '-15 minutes') THEN NULL
+				WHEN attempts + 1 >= 5 THEN datetime('now', '+15 minutes')
+				ELSE locked_until END,
 			updated_at = CURRENT_TIMESTAMP
 	`, ip)
 }
