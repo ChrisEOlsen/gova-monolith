@@ -528,7 +528,7 @@ func main() {
 	), handleScaffoldResource)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User model, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token) and the login page, all 6 routes self-registered in api.json + routes_gen.go. Run scaffold_registration after for a registration endpoint."),
+		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User + MobileToken models, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token) and the login page, all 6 routes self-registered in api.json + routes_gen.go. Run scaffold_registration after for a registration endpoint."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
@@ -809,7 +809,10 @@ func authEndpoints() []Endpoint {
 		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST", Deps: []string{}, Kind: "auth_logout"},
 		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET", Deps: rwc, Auth: true, Kind: "auth_me"},
 		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST", Deps: rwc, Kind: "mobile_login"},
-		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE", Deps: []string{"write"}, Kind: "mobile_logout"},
+		// logout_token takes both handles because it goes through
+		// models.MobileTokenModel, whose constructor owns the read side too —
+		// the handler itself no longer touches the database directly.
+		{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE", Deps: []string{"read", "write"}, Kind: "mobile_logout"},
 		{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET", Deps: rwc, Kind: "mobile_me"},
 	}
 }
@@ -909,6 +912,7 @@ CREATE TABLE IF NOT EXISTS mobile_tokens (
 	type fileSpec struct{ tmpl, out string }
 	specs := []fileSpec{
 		{"user_model.go.tmpl", "/src/app/models/User.go"},
+		{"mobile_token_model.go.tmpl", "/src/app/models/MobileToken.go"},
 		{"auth_handler.go.tmpl", "/src/app/handlers/auth.go"},
 		{"auth_test.go.tmpl", "/src/app/handlers/auth_test.go"},
 		{"logout_handler.go.tmpl", "/src/app/handlers/logout.go"},

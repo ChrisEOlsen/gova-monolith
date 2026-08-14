@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"gova/app/cache"
 	"gova/app/db"
@@ -90,6 +91,106 @@ func TestMobileMeGET_RejectsMissingBearerToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// sameUTCDateExpiredInstant returns (now, expired) where expired is in the past
+// AND shares now's UTC calendar date.
+//
+// That pairing is the whole point. DATETIME columns are TEXT and SQLite
+// compares them lexicographically; RFC3339's 'T' separator (0x54) sorts above
+// SQLite's space (0x20), so an RFC3339-encoded expiry from the same calendar
+// date compares GREATER than the current native timestamp and an expired token
+// reads as valid. A fixture from a different calendar date passes even against
+// that bug and proves nothing.
+//
+// Within a second of UTC midnight no earlier same-date instant exists; wait it
+// out rather than skipping, so this assertion can never silently stop running.
+func sameUTCDateExpiredInstant(t *testing.T) (time.Time, time.Time) {
+	t.Helper()
+	for i := 0; i < 3; i++ {
+		now := time.Now().UTC()
+		expired := now.Add(-1 * time.Second)
+		if expired.Format("2006-01-02") == now.Format("2006-01-02") {
+			return now, expired
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatal("could not obtain an expired instant on the current UTC calendar date")
+	return time.Time{}, time.Time{}
+}
+
+func TestMobileMeGET_RejectsExpiredToken(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	userID, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	now, expired := sameUTCDateExpiredInstant(t)
+	// Non-vacuity: the fixture must genuinely be in the past and genuinely on
+	// the same UTC calendar date, or this test cannot catch the trap.
+	if !expired.Before(now) {
+		t.Fatalf("fixture is not expired: expired=%s now=%s", expired, now)
+	}
+	if expired.Format("2006-01-02") != now.Format("2006-01-02") {
+		t.Fatalf("fixture is not same-UTC-date: expired=%s now=%s", expired, now)
+	}
+
+	token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	tokens := models.NewMobileTokenModel(testDB.Read, testDB.Write)
+	if err := tokens.Issue(mobileHashToken(token), userID, expired); err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	MobileMeGET(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expired token was accepted: got %d, want %d, body: %s",
+			rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+}
+
+func TestMobileLogoutDELETE_RevokesToken(t *testing.T) {
+	testDB := db.OpenTest(t, mobileAuthTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	loginRec := httptest.NewRecorder()
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(loginRec, loginReq)
+	var loginResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/logout_token", nil)
+	logoutReq.Header.Set("Authorization", "Bearer "+loginResp.Data.Token)
+	logoutRec := httptest.NewRecorder()
+	MobileLogoutDELETE(testDB.Read, testDB.Write)(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status: got %d, want %d", logoutRec.Code, http.StatusOK)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil)
+	meReq.Header.Set("Authorization", "Bearer "+loginResp.Data.Token)
+	meRec := httptest.NewRecorder()
+	MobileMeGET(testDB.Read, testDB.Write, appCache)(meRec, meReq)
+	if meRec.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token still works: got %d, want %d", meRec.Code, http.StatusUnauthorized)
 	}
 }
 

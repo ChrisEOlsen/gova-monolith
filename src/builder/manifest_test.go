@@ -366,7 +366,7 @@ func TestAuthEndpoints_SixWithKinds(t *testing.T) {
 		"POST /api/v1/auth/logout":         {"LogoutPOST", "auth_logout", false, 0},
 		"GET /api/v1/auth/me":              {"MeGET", "auth_me", true, 3},
 		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false, 3},
-		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false, 1},
+		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false, 2},
 		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false, 3},
 	}
 	for _, e := range eps {

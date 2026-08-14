@@ -1,0 +1,92 @@
+package models
+
+import (
+	"database/sql"
+	"errors"
+	"time"
+)
+
+// sqliteDatetimeLayout is SQLite's own DATETIME text form — the exact shape
+// CURRENT_TIMESTAMP and datetime('now') produce.
+//
+// DATETIME columns are TEXT and SQLite compares them lexicographically, so
+// every value written to one has to share a single layout. RFC3339 puts a 'T'
+// (0x54) where SQLite puts a space (0x20), so an RFC3339 string always sorts
+// AFTER a native string bearing the same calendar date — an expired token
+// would read as still valid for the whole day it expired on. Writing and
+// comparing in this layout makes the expiry check correct by construction
+// instead of by whatever the driver happened to encode.
+//
+// RFC3339 stays on the wire, per the API Wire Contract; models.Time converts at
+// that boundary.
+const sqliteDatetimeLayout = "2006-01-02 15:04:05"
+
+// ErrTokenInvalid covers both an unknown token hash and an expired one. The two
+// are deliberately indistinguishable to the caller — telling them apart would
+// confirm that a stolen token was once real.
+var ErrTokenInvalid = errors.New("mobile token invalid or expired")
+
+// MobileTokenModel owns every statement against mobile_tokens. Handlers call
+// these methods; no handler writes SQL against this table.
+type MobileTokenModel struct {
+	readDB  *sql.DB
+	writeDB *sql.DB
+}
+
+func NewMobileTokenModel(readDB, writeDB *sql.DB) *MobileTokenModel {
+	return &MobileTokenModel{readDB: readDB, writeDB: writeDB}
+}
+
+// Issue stores a bearer token's SHA-256 hash for userID, valid until expiresAt.
+// The raw token is never persisted.
+func (m *MobileTokenModel) Issue(tokenHash string, userID int64, expiresAt time.Time) error {
+	_, err := m.writeDB.Exec(
+		"INSERT INTO mobile_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+		tokenHash, userID, expiresAt.UTC().Format(sqliteDatetimeLayout),
+	)
+	return err
+}
+
+// Revoke deletes a token hash. A hash that was never issued is not an error:
+// logout must not reveal whether the token existed.
+func (m *MobileTokenModel) Revoke(tokenHash string) error {
+	_, err := m.writeDB.Exec("DELETE FROM mobile_tokens WHERE token_hash = ?", tokenHash)
+	return err
+}
+
+// UserIDAt returns the user a token belongs to, or ErrTokenInvalid if the hash
+// is unknown or the token had already expired at now. now is bound in the same
+// layout Issue writes, so this is a like-for-like comparison rather than one
+// that only works by accident of driver encoding.
+func (m *MobileTokenModel) UserIDAt(tokenHash string, now time.Time) (int64, error) {
+	var userID int64
+	err := m.readDB.QueryRow(
+		"SELECT user_id FROM mobile_tokens WHERE token_hash = ? AND expires_at > ?",
+		tokenHash, now.UTC().Format(sqliteDatetimeLayout),
+	).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrTokenInvalid
+		}
+		return 0, err
+	}
+	return userID, nil
+}
+
+// UserID is UserIDAt against the wall clock — what request handlers use.
+func (m *MobileTokenModel) UserID(tokenHash string) (int64, error) {
+	return m.UserIDAt(tokenHash, time.Now())
+}
+
+// DeleteExpired removes every token that had expired at now. Nothing calls this
+// on the request path; wire it to a periodic job if the table needs pruning.
+func (m *MobileTokenModel) DeleteExpired(now time.Time) (int64, error) {
+	res, err := m.writeDB.Exec(
+		"DELETE FROM mobile_tokens WHERE expires_at <= ?",
+		now.UTC().Format(sqliteDatetimeLayout),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

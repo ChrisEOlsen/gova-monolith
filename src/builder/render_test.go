@@ -72,6 +72,65 @@ func TestMobileAuthTestTemplate_IsValidGo(t *testing.T) {
 	renderAndParse(t, "mobile_auth_test.go.tmpl", TemplateData{})
 }
 
+func TestMobileTokenModelTemplate_IsValidGo(t *testing.T) {
+	renderAndParse(t, "mobile_token_model.go.tmpl", TemplateData{})
+}
+
+// TestMobileAuthHandlerTemplate_NoRawSQL enforces Critical Constraint 1 at the
+// template level. scaffold_auth used to emit INSERT/DELETE/SELECT against
+// mobile_tokens straight from the handler, so every app generated from this
+// template shipped a documented-forbidden pattern in its own auth layer.
+func TestMobileAuthHandlerTemplate_NoRawSQL(t *testing.T) {
+	out := renderAndParse(t, "mobile_auth_handler.go.tmpl", newData("user", nil))
+
+	banned := []string{
+		"INSERT INTO", "DELETE FROM", "SELECT ", "UPDATE ",
+		"ExecContext(", "QueryContext(", "QueryRowContext(",
+		".Exec(", ".Query(", ".QueryRow(",
+	}
+	for _, frag := range banned {
+		if strings.Contains(out, frag) {
+			t.Errorf("mobile_auth_handler.go.tmpl contains raw SQL/db access %q — use a model method:\n%s", frag, out)
+		}
+	}
+	if !strings.Contains(out, "models.NewMobileTokenModel(") {
+		t.Errorf("handler should reach mobile_tokens through models.MobileTokenModel:\n%s", out)
+	}
+}
+
+// TestMobileTokenModelTemplate_PinsSQLiteDatetimeLayout pins the storage layout
+// for expires_at. DATETIME is TEXT and SQLite compares it lexicographically:
+// RFC3339's 'T' (0x54) sorts above SQLite's space (0x20), so an RFC3339 expiry
+// from the same calendar date compares greater than the current native
+// timestamp and an expired token passes as valid. Writing and comparing in
+// SQLite's own layout — with the comparison value bound, not sourced from a
+// different clock — is what makes the check correct by construction.
+func TestMobileTokenModelTemplate_PinsSQLiteDatetimeLayout(t *testing.T) {
+	out := renderAndParse(t, "mobile_token_model.go.tmpl", TemplateData{})
+
+	if !strings.Contains(out, `sqliteDatetimeLayout = "2006-01-02 15:04:05"`) {
+		t.Errorf("mobile_token_model.go.tmpl must pin SQLite's own datetime layout:\n%s", out)
+	}
+	if strings.Contains(out, "time.RFC3339") {
+		t.Errorf("expires_at must not be stored or compared as RFC3339:\n%s", out)
+	}
+	for _, want := range []string{
+		`expiresAt.UTC().Format(sqliteDatetimeLayout)`,
+		`now.UTC().Format(sqliteDatetimeLayout)`,
+		`expires_at > ?`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q — expiry must be written and compared in one bound layout:\n%s", want, out)
+		}
+	}
+	// The old shape. Comparing against CURRENT_TIMESTAMP is only safe if
+	// whatever wrote expires_at happened to use the same layout — which is
+	// exactly the accident this template replaces with an explicit bind.
+	if strings.Contains(out, "CURRENT_TIMESTAMP)") || strings.Contains(out, "> CURRENT_TIMESTAMP") {
+		t.Errorf("expiry comparison must bind an explicitly formatted instant, not CURRENT_TIMESTAMP:\n%s", out)
+	}
+}
+
 func sampleFieldsWithNullable() []Field {
 	return []Field{
 		{Name: "title", Type: "string", Nullable: false},
