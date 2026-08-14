@@ -517,23 +517,23 @@ func main() {
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
-		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module, and register the GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
+		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module, register GET /api/v1/<plural> in api.json + routes_gen.go, and serve the shell at /<plural> via pages_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldList)
 
 	s.AddTool(mcp.NewTool("scaffold_resource",
-		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, and register all 5 routes in api.json + routes_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources."),
+		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, register all 5 routes in api.json + routes_gen.go, and serve the list page at /<plural> via pages_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
 	), handleScaffoldResource)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
-		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User + MobileToken models, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token) and the login page, all 6 routes self-registered in api.json + routes_gen.go. Run scaffold_registration after for a registration endpoint."),
+		mcp.WithDescription("Generate the full auth system — cookie (web) AND bearer (mobile) in one run: users + rate_limits + mobile_tokens tables, User + MobileToken models, cookie handlers (login/logout/me) + bearer handlers (login_token/logout_token/me_token), all 6 routes self-registered in api.json + routes_gen.go, and the login page served at /login via pages_gen.go. Run scaffold_registration after for a registration endpoint."),
 	), handleScaffoldAuth)
 
 	s.AddTool(mcp.NewTool("scaffold_registration",
-		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Registers the route in api.json + routes_gen.go."),
+		mcp.WithDescription("Generate registration JSON handler + HTML page. Run after scaffold_auth. Registers POST /api/v1/auth/register in api.json + routes_gen.go and the page /register in pages_gen.go."),
 	), handleScaffoldRegistration)
 
 	s.AddTool(mcp.NewTool("add_js_form",
@@ -696,6 +696,7 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err := renderToFile("page.js.tmpl", jsPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
+
 	page := Page{Path: path, File: filename, Title: title, Auth: authRequired}
 	if err := updateManifest(nil, nil, []Page{page}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
@@ -774,16 +775,31 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		Auth:    false, Model: name, Kind: "list",
 		Response: resourceResponse(model, "list"),
 	}
-	if err := updateManifest([]Model{model}, []Endpoint{endpoint}, nil); err != nil {
+	if err := updateManifest([]Model{model}, []Endpoint{endpoint}, []Page{listPage(name, data.Title)}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(
 		strings.Join(results, "\n") +
-			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and updated api.json + routes_gen.go.\n" +
+			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and page /" + toPlural(name) +
+			" — updated api.json + routes_gen.go + pages_gen.go.\n" +
 			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
+// listPage is the page row scaffold_list and scaffold_resource register for the
+// list shell they emit at static/pages/<plural>.html.
+//
+// The path scheme across all four scaffolds is: resource pages are always
+// PLURAL (/projects, /invoices) and the two auth pages take their singular verb
+// (/login, /register). Because toPlural never returns its input unchanged, a
+// resource literally named "login" registers /logins — so the two namespaces
+// cannot collide no matter what a resource is called, without needing a
+// reserved-word list to enforce it.
+func listPage(name, title string) Page {
+	plural := toPlural(name)
+	return Page{Path: "/" + plural, File: plural, Title: title, Auth: false}
+}
+
 // resourceEndpoints returns the five CRUD endpoints scaffold_resource registers,
 // each carrying the request/response body schema derived from the model + kind.
 // The handler symbols must match resource_handlers.go.tmpl exactly.
@@ -870,14 +886,15 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 
 	model := fieldsToModel(name, toPlural(name), fields)
-	if err := updateManifest([]Model{model}, resourceEndpoints(model), nil); err != nil {
+	if err := updateManifest([]Model{model}, resourceEndpoints(model), []Page{listPage(name, data.Title)}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(
 		strings.Join(results, "\n") +
 			"\n\nRegistered full CRUD (list, detail, create, update, delete) for /api/v1/" + toPlural(name) +
-			" in api.json + routes_gen.go. Endpoints are public — set auth:true per endpoint in api.json to protect them (requires scaffold_auth).\n" +
+			" plus the page /" + toPlural(name) +
+			" in api.json + routes_gen.go + pages_gen.go. Endpoints are public — set auth:true per endpoint in api.json to protect them (requires scaffold_auth).\n" +
 			"Add a create form with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
@@ -945,11 +962,14 @@ CREATE TABLE IF NOT EXISTS mobile_tokens (
 		{Name: "email", Type: "string", Nullable: false},
 		{Name: "created_at", Type: "timestamp", Nullable: false},
 	}}
-	if err := updateManifest([]Model{userModel}, authEndpoints(), nil); err != nil {
+	// Title mirrors the shell's own <title> so api.json does not describe the
+	// page differently from how it renders.
+	loginPage := Page{Path: "/login", File: "login", Title: "Sign In", Auth: false}
+	if err := updateManifest([]Model{userModel}, authEndpoints(), []Page{loginPage}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
-	results = append(results, "\nRegistered full auth — cookie (login, logout, me) and bearer (login_token, logout_token, me_token) — plus the user model in api.json + routes_gen.go.")
+	results = append(results, "\nRegistered full auth — cookie (login, logout, me) and bearer (login_token, logout_token, me_token) — plus the user model and the /login page in api.json + routes_gen.go + pages_gen.go.")
 
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
@@ -972,11 +992,12 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 
 	endpoint := Endpoint{Method: "POST", Path: "/api/v1/auth/register", Handler: "RegisterPOST",
 		Deps: []string{"read", "write", "cache"}, Kind: "register"}
-	if err := updateManifest(nil, []Endpoint{endpoint}, nil); err != nil {
+	registerPage := Page{Path: "/register", File: "register", Title: "Create Account", Auth: false}
+	if err := updateManifest(nil, []Endpoint{endpoint}, []Page{registerPage}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
-	results = append(results, "\nRegistered registration route in api.json + routes_gen.go.")
+	results = append(results, "\nRegistered registration route and the /register page in api.json + routes_gen.go + pages_gen.go.")
 	return mcp.NewToolResultText(strings.Join(results, "\n") + "\n\n" + runPatternChecks()), nil
 }
 func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

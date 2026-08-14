@@ -137,6 +137,25 @@ func TestValidatePagePath(t *testing.T) {
 	}
 }
 
+// TestListPage_PluralNamespaceCannotCollideWithAuthPages proves the path scheme
+// holds structurally rather than by convention: resource pages are plural, the
+// auth pages are singular, and toPlural never returns its input unchanged — so
+// even a resource named "login" lands somewhere else.
+func TestListPage_PluralNamespaceCannotCollideWithAuthPages(t *testing.T) {
+	for _, name := range []string{"login", "register"} {
+		p := listPage(name, "T")
+		if p.Path == "/login" || p.Path == "/register" {
+			t.Errorf("resource %q collides with an auth page at %s", name, p.Path)
+		}
+	}
+	if got := listPage("project", "Projects").Path; got != "/projects" {
+		t.Errorf("listPage path: got %q, want /projects", got)
+	}
+	if got := listPage("project", "Projects").File; got != "projects" {
+		t.Errorf("listPage file: got %q, want projects", got)
+	}
+}
+
 func TestUpdateManifestAt_PageConflictWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	handlersDir := filepath.Join(dir, "handlers")

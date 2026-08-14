@@ -57,14 +57,14 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 ### 2. Scaffold the Backbone
 - **Option A (Standard List):** `scaffold_list(name='project', fields=['name:string', 'status:string'])`
-- **Option B (Custom):** `create_model(name='project', ...)` + `create_page(filename='projects', ...)`
+- **Option B (Custom):** `create_model(name='project', ...)` + `create_page(filename='projects', path='/projects', ...)` + `create_handler(...)` for its JSON endpoints
 - **Option C (Auth — optional):** `scaffold_auth()` → `scaffold_registration()`
 
 > **Auth is optional.** Skip Option C for public sites. `middleware.Auth` is passive — it reads a session cookie if present but never blocks on its own. Protect specific API endpoints with `middleware.RequireAuth`. Protect pages client-side by calling `requireAuth()` at the top of the JS module.
 
 ### 3. Add Forms
 - Use `add_js_form(page='projects', api_endpoint='/api/v1/projects', ...)` to inject creation forms.
-- Routes are registered automatically — scaffold and create_handler/create_page update api.json and routes_gen.go.
+- Routes are registered automatically — scaffolds and `create_handler` update api.json + routes_gen.go; `create_page` and the page-emitting scaffolds update api.json + pages_gen.go.
 - Edit `.js` files to add custom behavior.
 - Edit `.html` files to adjust layout and structure.
 - Keep Go handler logic in `handlers/`. HTML in `static/pages/`. JS in `static/js/`.
@@ -79,6 +79,10 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above for which ones. Nothing extra to do for that code beyond letting the scaffold call run.
 
+- **Generated page routes test themselves.** `pages_gen_test.go` is regenerated
+  with `pages_gen.go` and asserts every registered page actually serves its
+  shell through a real chi router. Do not hand-edit it; if it fails, a page is
+  registered but unreachable.
 - **Hand-customized logic gets its own test.** If a task customizes a scaffolded handler beyond its generated behavior, or implements a bespoke `create_handler`/`create_page` stub, write a test for it — same `_test.go` convention (`httptest` against the handler, `db.OpenTest` for anything touching the db). See `gova-writing-plans` Step 3b.
 - **Verify:** `docker compose exec app go test ./...` — required alongside `docker compose logs app`, not instead of it.
 - **No JS testing.** Blocked by Critical Constraint 4 (no Node/npm — every standard JS test runner needs Node). Client-side code stays manually/browser-verified.
@@ -95,6 +99,9 @@ Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above 
 2. **No HTML rendering in Go handlers.** All handlers return JSON.
    - Correct: `jsonOK(w, items)`
    - Wrong: `fmt.Fprintf(w, "<li>%s</li>", name)`
+   - Serving a static shell is not rendering: `pages_gen.go` hands an inert
+     `.html` file to `http.ServeFile` and interpolates nothing. Page HTML is
+     never built in Go.
 
 3. **JS Safety — Non-Negotiable:**
    - `NEVER`: `element.innerHTML = userValue` ← XSS vector
@@ -144,20 +151,43 @@ Helpers in `handlers/json.go`: `jsonOK`, `jsonList`, `jsonError`,
 
 ## API Manifest & Routing
 
-`src/app/api.json` is the machine-readable source of truth for the API surface —
-every model (with field types and nullability) and every endpoint (method, path,
-handler, auth, kind). It is committed source, not a build artifact.
+`src/app/api.json` is the machine-readable source of truth for the served
+surface — every model (with field types and nullability), every endpoint
+(method, path, handler, auth, kind), and every page (path, file, title). It is
+committed source, not a build artifact.
 
-- **Routes are automatic.** Scaffold tools and `create_handler`/`create_page`
-  upsert their records into `api.json` and regenerate
-  `src/app/handlers/routes_gen.go`. `main.go` mounts them with one
-  `handlers.RegisterGenerated(...)` call. **Never hand-wire a route in main.go,
-  and never edit `routes_gen.go` (it is generated).**
+- **Routes are automatic.** Scaffold tools and `create_handler` upsert into
+  `endpoints` and regenerate `src/app/handlers/routes_gen.go`. `main.go` mounts
+  them with one `handlers.RegisterGenerated(...)` call. **Never hand-wire a route
+  in main.go, and never edit `routes_gen.go` (it is generated).**
+- **Pages are automatic too, and live in their own table.** `create_page` and
+  every scaffold that emits an `.html` shell upsert into `pages` and regenerate
+  `src/app/handlers/pages_gen.go` (plus its companion `pages_gen_test.go`).
+  `main.go` mounts them with one `handlers.RegisterPages(r)` call.
+- **`pages` is separate from `endpoints` on purpose.** A page has no method
+  beyond GET, no request or response body and no deps, so it is not part of the
+  API surface a native client consumes. Keeping the two apart also keeps the
+  namespaces disjoint: `create_handler` requires `/api/v1/`, `create_page`
+  refuses `/api/`, so neither can shadow the other. Resource pages are always
+  plural (`/projects`) and the auth pages take their singular verb (`/login`,
+  `/register`), so a resource named `login` lands at `/logins` and cannot
+  collide.
+- **Pages are served by file path, never by request input.** `pages_gen.go`'s
+  `pageFile` helper takes a literal base name from the generated table and
+  applies `filepath.Base` as a second guard, so nothing a caller sends can reach
+  the filesystem.
+- **A page's `auth` flag is declarative only.** It records that the JS module
+  calls `requireAuth()` on load; the shell is *not* wrapped in
+  `middleware.RequireAuth`, because answering a browser navigation with a JSON
+  401 body is worse than letting the module redirect. The page's data is
+  protected on its own `/api/v1/` endpoints, which is where `auth: true`
+  actually enforces anything.
 - **Per-endpoint auth is declarative.** An endpoint's `auth: true` makes
   `routes_gen.go` wrap it in `middleware.RequireAuth`. Handlers do not check auth
   inline.
 - **Served at `GET /api/v1/_manifest`.** `GET /api/v1/_version` also reports a
-  `manifest_hash` so a client or CI can detect any surface change.
+  `manifest_hash` so a client or CI can detect any surface change — pages are in
+  the hash, so adding or moving one is visible there too.
 - **`inspect_app` returns JSON** — `{manifest, on_disk, divergence}` — and flags
   files that drifted from the manifest.
 - **No removal tool.** `api.json` is upsert-only; to remove a resource, edit
@@ -199,11 +229,11 @@ hand-written `models/query.go`. Create/update validation is coarse (malformed bo
 | `execute_sql` | Create tables — always before `create_model` | — |
 | `create_model` | Data layer; table must exist first. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
 | `create_handler` | Single custom JSON endpoint stub. Takes `method` + `path`; self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
-| `create_page` | Full page: `.html` shell + `.js` module + Go handler stub. Takes `path` (method is always `GET`); self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — same as `create_handler` |
-| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. — read-only; use `scaffold_resource` for full CRUD | Yes — CRUD + list-handler tests |
-| `scaffold_resource` | Full CRUD: model + list/detail/create/update/delete handlers + list page, all self-registered. List supports `?sort=`/`?filter=` (whitelisted). Table must exist first. Public by default. | Yes — model CRUD + resource handler tests |
-| `scaffold_auth` | Full auth — cookie **and** bearer (web + mobile) in one run: users + rate_limits + mobile_tokens tables, login/logout/me + login_token/logout_token/me_token handlers, all 6 routes self-registered. Run scaffold_registration after for a registration endpoint. | Yes — login, rate-limit, CSRF tests |
-| `scaffold_registration` | Registration endpoint — run after `scaffold_auth` | Yes — registration, duplicate-email tests |
+| `create_page` | A page: `.html` shell + `.js` module. Takes a **human-facing** `path` (`/dashboard`, `/settings`) and **rejects anything under `/api/`** — that namespace is `create_handler`'s. Registers a row in `api.json`'s `pages` array and regenerates `pages_gen.go`. **No Go handler is created or needed** — the generated `pageFile` helper serves the shell. Use `create_handler` for the JSON endpoints the page's JS calls. | Yes — `pages_gen_test.go` asserts every registered page serves its shell |
+| `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Registers `GET /api/v1/<plural>` **and serves the page at `/<plural>`**. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. — read-only; use `scaffold_resource` for full CRUD | Yes — CRUD + list-handler + page-serving tests |
+| `scaffold_resource` | Full CRUD: model + list/detail/create/update/delete handlers + list page, all self-registered. The list page is served at `/<plural>`. List supports `?sort=`/`?filter=` (whitelisted). Table must exist first. Public by default. | Yes — model CRUD + resource handler + page-serving tests |
+| `scaffold_auth` | Full auth — cookie **and** bearer (web + mobile) in one run: users + rate_limits + mobile_tokens tables, `User` **and `MobileToken`** models, login/logout/me + login_token/logout_token/me_token handlers, all 6 routes self-registered, **and the login page served at `/login`**. Run scaffold_registration after for a registration endpoint. | Yes — login, rate-limit, CSRF, bearer-token expiry/revocation, rate-limit decay tests |
+| `scaffold_registration` | Registration endpoint + page — run after `scaffold_auth`. Registers `POST /api/v1/auth/register` and serves the page at `/register`. | Yes — registration, duplicate-email tests |
 | `add_js_form` | Inject creation form into existing `.js` module | No — JS isn't tested (see Testing below) |
 
 ---
@@ -215,16 +245,28 @@ When `scaffold_list` doesn't fit (filtered views, detail pages, dashboards):
 ```
 1. execute_sql       → create the table
 2. create_model      → generate the model
-3. create_page       → html shell + js module + handler stub
-4. create_handler    → POST/DELETE handler stubs as needed
+3. create_page       → html shell + js module, served at a human-facing URL
+4. create_handler    → GET/POST/DELETE JSON handler stubs under /api/v1/
 5. edit handlers/    → implement TODO logic using model methods
 6. edit static/js/   → fetch data, render DOM (never innerHTML for user data)
 7. add_js_form       → inject form at // @inject-forms marker
 8. docker compose restart app → recompiles CSS, rebuilds the Go binary
 ```
 
-Steps 3 and 4 register their own routes — `create_page` and `create_handler` update
-`api.json` and regenerate `routes_gen.go`. Never hand-wire a route in `main.go`.
+Steps 3 and 4 register themselves and are the two halves of one page:
+
+- **`create_page` owns the URL a person visits.** Its `path` is human-facing
+  (`/dashboard`) and must **not** be under `/api/` — the call is refused if it
+  is. It writes a row into `api.json`'s `pages` array and regenerates
+  `pages_gen.go`. It creates **no Go handler**: the generated `pageFile` helper
+  serves the shell, so there is no TODO to implement and nothing to test by
+  hand.
+- **`create_handler` owns the data the page fetches.** Its `path` must start
+  with `/api/v1/`. It writes into `endpoints` and regenerates `routes_gen.go`,
+  and its stub is where your logic goes.
+
+Never hand-wire a route in `main.go`, and never edit `routes_gen.go`,
+`pages_gen.go` or `pages_gen_test.go` (all three are generated).
 
 ---
 
