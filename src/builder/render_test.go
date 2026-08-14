@@ -341,6 +341,91 @@ func TestRenderRoutes_MobileBearerNotWrapped(t *testing.T) {
 	}
 }
 
+func pageManifest(pages ...Page) Manifest {
+	m := Manifest{APIVersion: "1.0.0"}
+	for _, p := range pages {
+		_ = m.UpsertPage(p)
+	}
+	m.canonicalize()
+	return m
+}
+
+func TestRenderPages_EmptyIsValidGo(t *testing.T) {
+	out, err := renderPages(pageManifest())
+	if err != nil {
+		t.Fatalf("renderPages: %v", err)
+	}
+	parseAsGo(t, "pages_gen.go", out)
+	if !strings.Contains(out, "func RegisterPages(r chi.Router)") {
+		t.Errorf("missing RegisterPages signature:\n%s", out)
+	}
+}
+
+func TestRenderPages_MountsEachPage(t *testing.T) {
+	out, err := renderPages(pageManifest(
+		Page{Path: "/login", File: "login", Title: "Log In"},
+		Page{Path: "/projects", File: "projects", Title: "Projects", Auth: true},
+	))
+	if err != nil {
+		t.Fatalf("renderPages: %v", err)
+	}
+	parseAsGo(t, "pages_gen.go", out)
+	for _, want := range []string{
+		`r.Get("/login", pageFile("login"))`,
+		`r.Get("/projects", pageFile("projects"))`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing page line:\n  want: %s\n  in:\n%s", want, out)
+		}
+	}
+	// Pages are never mounted under the API prefix, and are never wrapped in
+	// RequireAuth — a browser navigating a page must not receive a JSON 401
+	// body. auth is recorded in api.json and enforced client-side by the JS
+	// module's requireAuth() call; the page's data is protected on its own
+	// /api/v1/ endpoints.
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "r.Get(") {
+			continue
+		}
+		if strings.Contains(line, `"/api/`) {
+			t.Errorf("a page must never be mounted under the API prefix: %s", line)
+		}
+		if strings.Contains(line, "middleware") {
+			t.Errorf("page routes must not be wrapped in middleware: %s", line)
+		}
+	}
+	if strings.Contains(out, `"gova/app/middleware"`) {
+		t.Errorf("pages_gen.go must not import middleware:\n%s", out)
+	}
+}
+
+// TestRenderPages_ServesByGeneratedFileName pins the two properties that keep
+// page serving safe: the file name comes from the generated table (a Go string
+// literal, never request input), and filepath.Base is a second guard inside the
+// helper.
+func TestRenderPages_ServesByGeneratedFileName(t *testing.T) {
+	out, err := renderPages(pageManifest(Page{Path: "/projects", File: "projects"}))
+	if err != nil {
+		t.Fatalf("renderPages: %v", err)
+	}
+	if !strings.Contains(out, `"./static/pages/" + filepath.Base(name) + ".html"`) {
+		t.Errorf("pageFile must derive its path via filepath.Base:\n%s", out)
+	}
+	if strings.Contains(out, "chi.URLParam") || strings.Contains(out, "r.URL.Path") {
+		t.Errorf("pageFile must never build a path from request input:\n%s", out)
+	}
+}
+
+func TestRenderPages_Deterministic(t *testing.T) {
+	a := Page{Path: "/a", File: "a"}
+	b := Page{Path: "/b", File: "b"}
+	out1, _ := renderPages(pageManifest(a, b))
+	out2, _ := renderPages(pageManifest(b, a))
+	if out1 != out2 {
+		t.Errorf("page render depends on insertion order:\n---1---\n%s\n---2---\n%s", out1, out2)
+	}
+}
+
 func TestModelTemplate_GetPageTakesQueryOpts(t *testing.T) {
 	data := newData("widget", sampleFieldsWithNullable())
 	out := renderAndParse(t, "model.go.tmpl", data)
@@ -450,3 +535,61 @@ func TestRenderRoutes_MatchesCommittedManifest(t *testing.T) {
 	}
 }
 
+// TestRenderPages_MatchesCommittedManifest is the same sync property for the
+// page table — api.json's "pages" against handlers/pages_gen.go and its
+// generated companion test.
+func TestRenderPages_MatchesCommittedManifest(t *testing.T) {
+	m, err := readManifestAt("../app/api.json")
+	if err != nil {
+		t.Fatalf("read committed api.json: %v", err)
+	}
+	for _, tc := range []struct {
+		file   string
+		render func(Manifest) (string, error)
+	}{
+		{"pages_gen.go", renderPages},
+		{"pages_gen_test.go", renderPagesTest},
+	} {
+		out, err := tc.render(m)
+		if err != nil {
+			t.Fatalf("render %s: %v", tc.file, err)
+		}
+		committed, err := os.ReadFile("../app/handlers/" + tc.file)
+		if err != nil {
+			t.Fatalf("read committed %s: %v", tc.file, err)
+		}
+		if string(committed) != out {
+			t.Errorf("handlers/%s has drifted from api.json.\n"+
+				"Re-run any scaffold tool (or regenerate) to bring them back in sync.\n"+
+				"---committed---\n%s\n---rendered from api.json---\n%s", tc.file, committed, out)
+		}
+	}
+}
+
+func TestRenderPagesTest_IsValidGoAndTablesThePages(t *testing.T) {
+	out, err := renderPagesTest(pageManifest(
+		Page{Path: "/login", File: "login", Title: "Sign In"},
+		Page{Path: "/widgets", File: "widgets", Title: "Widgets"},
+	))
+	if err != nil {
+		t.Fatalf("renderPagesTest: %v", err)
+	}
+	parseAsGo(t, "pages_gen_test.go", out)
+	for _, want := range []string{
+		`{path: "/login", file: "login", title: "Sign In"},`,
+		`{path: "/widgets", file: "widgets", title: "Widgets"},`,
+		"RegisterPages(r)",
+		"func TestGeneratedPages_ServeTheirShell(t *testing.T)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in generated page test:\n%s", want, out)
+		}
+	}
+
+	// The empty case must still compile — a pristine app has no pages.
+	empty, err := renderPagesTest(pageManifest())
+	if err != nil {
+		t.Fatalf("renderPagesTest(empty): %v", err)
+	}
+	parseAsGo(t, "pages_gen_test.go", empty)
+}

@@ -15,6 +15,16 @@ type Manifest struct {
 	GeneratedAt string     `json:"generated_at"`
 	Models      []Model    `json:"models"`
 	Endpoints   []Endpoint `json:"endpoints"`
+	Pages       []Page     `json:"pages"`
+}
+
+// Page mirrors the builder's page record — a human-facing HTML route. The app
+// only reads it; handlers/pages_gen.go is what actually mounts these.
+type Page struct {
+	Path  string `json:"path"`
+	File  string `json:"file"`
+	Title string `json:"title,omitempty"`
+	Auth  bool   `json:"auth"`
 }
 
 type Model struct {
@@ -55,7 +65,7 @@ type Endpoint struct {
 // yields the empty manifest — a fresh app has an empty but valid contract, not
 // an error.
 func loadManifest(path string) Manifest {
-	empty := Manifest{APIVersion: "1.0.0", Models: []Model{}, Endpoints: []Endpoint{}}
+	empty := Manifest{APIVersion: "1.0.0", Models: []Model{}, Endpoints: []Endpoint{}, Pages: []Page{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return empty
@@ -69,6 +79,9 @@ func loadManifest(path string) Manifest {
 	}
 	if m.Endpoints == nil {
 		m.Endpoints = []Endpoint{}
+	}
+	if m.Pages == nil {
+		m.Pages = []Page{}
 	}
 	return m
 }

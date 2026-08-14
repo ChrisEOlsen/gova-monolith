@@ -1,0 +1,126 @@
+// Code generated from api.json by gova-builder. DO NOT EDIT.
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// generatedPage is one row of the api.json page table this file was rendered
+// from. The table is regenerated with pages_gen.go, so these assertions always
+// describe the page set the app actually mounts.
+type generatedPage struct {
+	path  string
+	file  string
+	title string
+}
+
+var generatedPages = []generatedPage{
+}
+
+// pagesRouter mounts the real RegisterPages on a real chi router.
+//
+// It moves the working directory up to src/app first, because the generated
+// handlers resolve "./static/pages/..." relative to the process's directory —
+// which is src/app when the server runs, but the package directory under
+// `go test`. Without this the assertions below would 404 for a reason that has
+// nothing to do with routing.
+func pagesRouter(t *testing.T) chi.Router {
+	t.Helper()
+	t.Chdir("..")
+	r := chi.NewRouter()
+	RegisterPages(r)
+	return r
+}
+
+func getPage(t *testing.T, r chi.Router, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	return rec
+}
+
+// TestGeneratedPages_ServeTheirShell is the end-to-end proof that a scaffolded
+// page is reachable at its registered URL. Scaffolds used to emit .html/.js
+// shells and register nothing, so every page they produced was dead on arrival.
+func TestGeneratedPages_ServeTheirShell(t *testing.T) {
+	if len(generatedPages) == 0 {
+		t.Skip("no pages registered yet — nothing to serve")
+	}
+	r := pagesRouter(t)
+
+	for _, p := range generatedPages {
+		rec := getPage(t, r, p.path)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: got %d, want 200 (page registered but not served)", p.path, rec.Code)
+			continue
+		}
+		// Byte-equality with the shell on disk: proves the route serves THAT
+		// file and not some other page's.
+		want, err := os.ReadFile("./static/pages/" + p.file + ".html")
+		if err != nil {
+			t.Errorf("GET %s: registered shell static/pages/%s.html is missing: %v", p.path, p.file, err)
+			continue
+		}
+		if rec.Body.String() != string(want) {
+			t.Errorf("GET %s did not serve static/pages/%s.html", p.path, p.file)
+		}
+		if p.title != "" && !strings.Contains(rec.Body.String(), "<title>"+p.title+"</title>") {
+			t.Errorf("GET %s: body is missing <title>%s</title> — api.json's title has drifted from the shell", p.path, p.title)
+		}
+	}
+}
+
+func TestGeneratedPages_UnregisteredPathIs404(t *testing.T) {
+	r := pagesRouter(t)
+	for _, target := range []string{"/definitely-not-a-page", "/login/extra"} {
+		if rec := getPage(t, r, target); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: got %d, want 404 — RegisterPages must not add a catch-all", target, rec.Code)
+		}
+	}
+}
+
+// TestGeneratedPages_RequestPathCannotTraverse covers the URL side of page
+// serving.
+//
+// Note which mechanism does the work here: chi routes on the literal request
+// path and does not clean it, so a traversing URL matches no page route and the
+// handler is never invoked at all. That is stronger than sanitizing the input —
+// pageFile's argument is a compile-time literal from the generated table, so
+// request input has no path into the filesystem. The filepath.Base guard covers
+// the other direction (a hostile generated name) and is exercised directly in
+// pages_test.go, where it is shown to actually run.
+func TestGeneratedPages_RequestPathCannotTraverse(t *testing.T) {
+	r := pagesRouter(t)
+
+	// api.json sits in src/app, one level above static/pages — a real file a
+	// successful traversal would reach.
+	if _, err := os.Stat("./api.json"); err != nil {
+		t.Fatalf("fixture: expected ./api.json next to static/, got %v", err)
+	}
+
+	for _, target := range []string{
+		"/../api.json",
+		"/login/../../api.json",
+		"/%2e%2e%2fapi.json",
+		"/..%2fapi.json",
+		"/static/../api.json",
+	} {
+		rec := getPage(t, r, target)
+		body := rec.Body.String()
+		if strings.Contains(body, "api_version") {
+			t.Errorf("GET %s escaped the pages directory and served api.json", target)
+		}
+		if strings.Contains(body, "<!DOCTYPE") || strings.Contains(body, "<html") {
+			t.Errorf("GET %s served a page shell; a traversing path must match no route", target)
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: got %d, want 404 (no page route matches a traversing path)", target, rec.Code)
+		}
+	}
+}

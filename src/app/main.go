@@ -44,8 +44,12 @@ func main() {
 	// Static files
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 
-	// Pages
+	// Pages. Source of truth: api.json's "pages" -> handlers/pages_gen.go.
+	// Never hand-wire a page route here; create_page and the scaffold tools
+	// regenerate RegisterPages. "/" is the framework's own home shell and is
+	// not in the manifest.
 	r.Get("/", handlers.HomeGET())
+	handlers.RegisterPages(r)
 
 	// API
 	r.Get("/api/v1/_version", handlers.VersionGET())

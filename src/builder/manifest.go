@@ -23,6 +23,27 @@ type Manifest struct {
 	GeneratedAt string     `json:"generated_at"`
 	Models      []Model    `json:"models"`
 	Endpoints   []Endpoint `json:"endpoints"`
+	Pages       []Page     `json:"pages"`
+}
+
+// Page is a human-facing HTML route: a URL a person types or clicks, serving a
+// static shell out of static/pages. Pages are kept in their own table rather
+// than mixed into Endpoints because they are not part of the API surface — they
+// have no method beyond GET, no request or response body, and no deps, and a
+// native client reading this manifest wants nothing to do with them.
+//
+// File is the shell's base name under static/pages (no extension) and is the
+// only thing that reaches the filesystem — never a value from a request.
+type Page struct {
+	Path  string `json:"path"`
+	File  string `json:"file"`
+	Title string `json:"title,omitempty"`
+	// Auth records that this page's JS module calls requireAuth() on load. It
+	// is declarative metadata only: the page shell holds no data, so it is not
+	// wrapped server-side. Answering a browser navigation with a JSON 401 body
+	// would be worse than letting the module redirect, and the data behind the
+	// page is protected on its own /api/v1/ endpoints.
+	Auth bool `json:"auth"`
 }
 
 type Model struct {
@@ -67,7 +88,7 @@ type Endpoint struct {
 func readManifestAt(path string) (Manifest, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return Manifest{APIVersion: "1.0.0", Models: []Model{}, Endpoints: []Endpoint{}}, nil
+		return Manifest{APIVersion: "1.0.0", Models: []Model{}, Endpoints: []Endpoint{}, Pages: []Page{}}, nil
 	}
 	if err != nil {
 		return Manifest{}, err
@@ -110,7 +131,37 @@ func (m *Manifest) UpsertEndpoint(e Endpoint) error {
 	return nil
 }
 
+// UpsertPage mirrors UpsertEndpoint for the page table, keyed on path. Same
+// path + same file refreshes the row in place; same path + a different file is
+// two scaffolds claiming one URL, which errors and leaves the manifest
+// untouched so nothing is written.
+func (m *Manifest) UpsertPage(p Page) error {
+	for i := range m.Pages {
+		if m.Pages[i].Path == p.Path {
+			if m.Pages[i].File != p.File {
+				return fmt.Errorf("page conflict: %s is already served by static/pages/%s.html, cannot reassign to %s.html",
+					p.Path, m.Pages[i].File, p.File)
+			}
+			m.Pages[i] = p
+			return nil
+		}
+	}
+	m.Pages = append(m.Pages, p)
+	return nil
+}
+
 func (m *Manifest) canonicalize() {
+	// Normalize nil to empty so a manifest written before a table existed
+	// hashes identically to one written after — null and [] must not differ.
+	if m.Models == nil {
+		m.Models = []Model{}
+	}
+	if m.Endpoints == nil {
+		m.Endpoints = []Endpoint{}
+	}
+	if m.Pages == nil {
+		m.Pages = []Page{}
+	}
 	sort.Slice(m.Models, func(i, j int) bool { return m.Models[i].Name < m.Models[j].Name })
 	sort.Slice(m.Endpoints, func(i, j int) bool {
 		if m.Endpoints[i].Path != m.Endpoints[j].Path {
@@ -118,17 +169,21 @@ func (m *Manifest) canonicalize() {
 		}
 		return m.Endpoints[i].Method < m.Endpoints[j].Method
 	})
+	sort.Slice(m.Pages, func(i, j int) bool { return m.Pages[i].Path < m.Pages[j].Path })
 	m.Hash = manifestHash(*m)
 }
 
-// manifestHash is sha256 over just the models and endpoints (sorted by
+// manifestHash is sha256 over the models, endpoints and pages (sorted by
 // canonicalize before this is called), excluding generated_at so an
-// otherwise-identical manifest always hashes the same.
+// otherwise-identical manifest always hashes the same. Pages are in the payload
+// so that adding or moving a page shows up as a surface change in
+// GET /api/v1/_version's manifest_hash.
 func manifestHash(m Manifest) string {
 	payload := struct {
 		Models    []Model    `json:"models"`
 		Endpoints []Endpoint `json:"endpoints"`
-	}{m.Models, m.Endpoints}
+		Pages     []Page     `json:"pages"`
+	}{m.Models, m.Endpoints, m.Pages}
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -198,6 +253,54 @@ func regenerateRoutesAt(handlersDir string, m Manifest) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(handlersDir, "routes_gen.go"), []byte(out), 0644)
+}
+
+// pagesTemplateData is what both page templates render from: the mount lines
+// for pages_gen.go and the raw rows for the generated test's table.
+type pagesTemplateData struct {
+	Lines []string
+	Pages []Page
+}
+
+func pagesData(m Manifest) pagesTemplateData {
+	m.canonicalize()
+	lines := make([]string, 0, len(m.Pages))
+	for _, p := range m.Pages {
+		lines = append(lines, fmt.Sprintf(`r.Get(%q, pageFile(%q))`, p.Path, p.File))
+	}
+	return pagesTemplateData{Lines: lines, Pages: m.Pages}
+}
+
+// renderPages emits RegisterPages from the manifest's page table. Each line
+// passes a literal file base name — taken from the manifest, never from a
+// request — to the pageFile helper, which is where the second guard
+// (filepath.Base) lives.
+func renderPages(m Manifest) (string, error) {
+	return renderNamedToString("pages_gen.go.tmpl", pagesData(m))
+}
+
+// renderPagesTest emits the companion test that mounts RegisterPages on a real
+// chi router and asserts every registered page actually serves its shell. It is
+// generated rather than hand-written because the assertions are per-page: a
+// hand-written test cannot know which pages a project scaffolded, and a page
+// that is registered but unreachable is exactly the defect this closes.
+func renderPagesTest(m Manifest) (string, error) {
+	return renderNamedToString("pages_gen_test.go.tmpl", pagesData(m))
+}
+
+func regeneratePagesAt(handlersDir string, m Manifest) error {
+	out, err := renderPages(m)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(handlersDir, "pages_gen.go"), []byte(out), 0644); err != nil {
+		return err
+	}
+	testOut, err := renderPagesTest(m)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(handlersDir, "pages_gen_test.go"), []byte(testOut), 0644)
 }
 
 // fieldsToModel converts Build 1 Field records (carrying schema-derived
@@ -307,9 +410,10 @@ func resourceResponse(m Model, kind string) *BodySchema {
 }
 
 // updateManifestAt is the transactional core: read, upsert all, and only if
-// every upsert succeeded, write api.json and regenerate routes_gen.go. A
-// conflict returns before any file is touched.
-func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint) error {
+// every upsert succeeded, write api.json and regenerate routes_gen.go and
+// pages_gen.go. A conflict — on an endpoint or a page — returns before any file
+// is touched.
+func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint, pages []Page) error {
 	m, err := readManifestAt(apiPath)
 	if err != nil {
 		return err
@@ -322,8 +426,16 @@ func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model
 			return err // conflict — nothing written yet
 		}
 	}
+	for _, p := range pages {
+		if err := m.UpsertPage(p); err != nil {
+			return err // conflict — nothing written yet
+		}
+	}
 	if err := writeManifestAt(apiPath, &m, now); err != nil {
 		return err
 	}
-	return regenerateRoutesAt(handlersDir, m)
+	if err := regenerateRoutesAt(handlersDir, m); err != nil {
+		return err
+	}
+	return regeneratePagesAt(handlersDir, m)
 }

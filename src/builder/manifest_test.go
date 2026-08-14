@@ -81,6 +81,132 @@ func TestUpsertEndpoint_ConflictErrors(t *testing.T) {
 	}
 }
 
+func samplePage() Page {
+	return Page{Path: "/projects", File: "projects", Title: "Projects"}
+}
+
+func TestUpsertPage_AddsThenRefreshes(t *testing.T) {
+	var m Manifest
+	if err := m.UpsertPage(samplePage()); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	refreshed := samplePage()
+	refreshed.Title = "All Projects"
+	if err := m.UpsertPage(refreshed); err != nil {
+		t.Fatalf("same path + same file must refresh, not error: %v", err)
+	}
+	if len(m.Pages) != 1 {
+		t.Fatalf("re-registering the same page duplicated it: got %d", len(m.Pages))
+	}
+	if m.Pages[0].Title != "All Projects" {
+		t.Errorf("refresh did not take: %+v", m.Pages[0])
+	}
+}
+
+func TestUpsertPage_ConflictErrorsAndDoesNotMutate(t *testing.T) {
+	var m Manifest
+	if err := m.UpsertPage(samplePage()); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	conflict := samplePage()
+	conflict.File = "projects_admin"
+	err := m.UpsertPage(conflict)
+	if err == nil {
+		t.Fatal("expected conflict for same path served by a different file")
+	}
+	if !strings.Contains(err.Error(), "/projects") || !strings.Contains(err.Error(), "projects.html") {
+		t.Errorf("conflict error should name the path and the incumbent file: %v", err)
+	}
+	if len(m.Pages) != 1 || m.Pages[0].File != "projects" {
+		t.Errorf("conflict must not mutate the manifest, got %+v", m.Pages)
+	}
+}
+
+func TestValidatePagePath(t *testing.T) {
+	for _, ok := range []string{"/login", "/projects", "/settings/profile"} {
+		if err := validatePagePath(ok); err != nil {
+			t.Errorf("validatePagePath(%q) should pass: %v", ok, err)
+		}
+	}
+	// The inverse of create_handler's check: the API namespace is off limits to
+	// pages, which is what keeps the two tables provably disjoint.
+	for _, bad := range []string{"/api/v1/projects", "/api/v1/", "/api", "/api/anything", "projects", "", "/static/pages/x"} {
+		if err := validatePagePath(bad); err == nil {
+			t.Errorf("validatePagePath(%q) should be rejected", bad)
+		}
+	}
+}
+
+func TestUpdateManifestAt_PageConflictWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	handlersDir := filepath.Join(dir, "handlers")
+	_ = os.MkdirAll(handlersDir, 0755)
+	apiPath := filepath.Join(dir, "api.json")
+
+	if err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, nil, []Page{samplePage()}); err != nil {
+		t.Fatal(err)
+	}
+	beforeAPI, _ := os.ReadFile(apiPath)
+	beforePages, _ := os.ReadFile(filepath.Join(handlersDir, "pages_gen.go"))
+
+	bad := samplePage()
+	bad.File = "projects_admin"
+	// A conflicting page must abort the WHOLE update — the endpoint below must
+	// not land either.
+	err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{sampleEndpoint()}, []Page{bad})
+	if err == nil {
+		t.Fatal("expected page conflict error")
+	}
+	afterAPI, _ := os.ReadFile(apiPath)
+	afterPages, _ := os.ReadFile(filepath.Join(handlersDir, "pages_gen.go"))
+	if string(beforeAPI) != string(afterAPI) {
+		t.Error("page conflict must not modify api.json")
+	}
+	if string(beforePages) != string(afterPages) {
+		t.Error("page conflict must not modify pages_gen.go")
+	}
+	if strings.Contains(string(afterAPI), "ProjectListGET") {
+		t.Error("page conflict must abort the endpoint upsert too — nothing written")
+	}
+}
+
+func TestUpdateManifestAt_PagesAreIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	handlersDir := filepath.Join(dir, "handlers")
+	_ = os.MkdirAll(handlersDir, 0755)
+	apiPath := filepath.Join(dir, "api.json")
+
+	for i := 0; i < 3; i++ {
+		if err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, nil, []Page{samplePage()}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	m, _ := readManifestAt(apiPath)
+	if len(m.Pages) != 1 {
+		t.Fatalf("re-running a scaffold duplicated page rows: %+v", m.Pages)
+	}
+	gen, err := os.ReadFile(filepath.Join(handlersDir, "pages_gen.go"))
+	if err != nil {
+		t.Fatalf("pages_gen.go not written: %v", err)
+	}
+	if n := strings.Count(string(gen), `r.Get("/projects", pageFile("projects"))`); n != 1 {
+		t.Errorf("pages_gen.go has %d copies of the route, want 1:\n%s", n, gen)
+	}
+}
+
+func TestHash_SensitiveToPages(t *testing.T) {
+	var a Manifest
+	a.canonicalize()
+	empty := a.Hash
+
+	var b Manifest
+	_ = b.UpsertPage(samplePage())
+	b.canonicalize()
+	if b.Hash == empty {
+		t.Error("adding a page must change the manifest hash — a page is part of the served surface")
+	}
+}
+
 func TestHash_StableAndSensitive(t *testing.T) {
 	var a Manifest
 	a.UpsertModel(sampleModel())
@@ -198,7 +324,8 @@ func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
 
 	err := updateManifestAt(apiPath, handlersDir, fixedTime(),
 		[]Model{sampleModel()},
-		[]Endpoint{sampleEndpoint()})
+		[]Endpoint{sampleEndpoint()},
+		[]Page{{Path: "/projects", File: "projects", Title: "Projects"}})
 	if err != nil {
 		t.Fatalf("updateManifestAt: %v", err)
 	}
@@ -223,7 +350,7 @@ func TestUpdateManifestAt_ConflictWritesNothing(t *testing.T) {
 	apiPath := filepath.Join(dir, "api.json")
 
 	// Seed one endpoint.
-	if err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{sampleEndpoint()}); err != nil {
+	if err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{sampleEndpoint()}, nil); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(apiPath)
@@ -231,7 +358,7 @@ func TestUpdateManifestAt_ConflictWritesNothing(t *testing.T) {
 	// Same (method,path), different handler -> conflict.
 	bad := sampleEndpoint()
 	bad.Handler = "Rogue"
-	err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{bad})
+	err := updateManifestAt(apiPath, handlersDir, fixedTime(), nil, []Endpoint{bad}, nil)
 	if err == nil {
 		t.Fatal("expected conflict error")
 	}

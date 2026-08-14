@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -400,9 +401,9 @@ func errResult(msg string) *mcp.CallToolResult {
 // updateManifest is the production wrapper around updateManifestAt, binding
 // the real manifest/handlers paths and the wall clock. Tool handlers call
 // this after rendering their files to self-register into api.json and
-// regenerate routes_gen.go.
-func updateManifest(models []Model, endpoints []Endpoint) error {
-	return updateManifestAt(manifestFilePath, handlersDirPath, time.Now(), models, endpoints)
+// regenerate routes_gen.go + pages_gen.go.
+func updateManifest(models []Model, endpoints []Endpoint, pages []Page) error {
+	return updateManifestAt(manifestFilePath, handlersDirPath, time.Now(), models, endpoints, pages)
 }
 
 func renderToFile(tmplName, outPath string, data TemplateData) error {
@@ -508,11 +509,11 @@ func main() {
 	), handleCreateHandler)
 
 	s.AddTool(mcp.NewTool("create_page",
-		mcp.WithDescription("Generate: static/pages/filename.html + static/js/filename.js + handlers/filename.go, and register its GET route in api.json + routes_gen.go. After: add forms with add_js_form."),
+		mcp.WithDescription("Generate a page: static/pages/filename.html + static/js/filename.js, and register it at a human-facing URL in api.json's pages table + pages_gen.go. The page is served by the generated pageFile helper — no Go handler is created or needed. Use create_handler for the JSON endpoints the page's JS calls. After: add forms with add_js_form."),
 		mcp.WithString("filename", mcp.Required(), mcp.Description("Page filename without extension")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Page title")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Full route path, e.g. /api/v1/projects")),
-		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load; also enforced server-side by a RequireAuth route wrap")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Human-facing URL, e.g. /projects or /settings. Must NOT be under /api/ — that namespace belongs to create_handler.")),
+		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load. Page shells are not wrapped server-side; protect the data on its /api/v1/ endpoints.")),
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
@@ -663,7 +664,7 @@ func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		Auth:    authRequired, Kind: "custom",
 		Summary: summary, Request: reqSchema, Response: respSchema,
 	}
-	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+	if err := updateManifest(nil, []Endpoint{endpoint}, nil); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
@@ -679,8 +680,8 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if !isSafeIdent(filename) {
 		return errResult("invalid filename"), nil
 	}
-	if !strings.HasPrefix(path, "/api/v1/") {
-		return errResult("path must start with /api/v1/"), nil
+	if err := validatePagePath(path); err != nil {
+		return errResult(err.Error()), nil
 	}
 	data := newData(filename, nil)
 	data.Title = title
@@ -695,24 +696,34 @@ func handleCreatePage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err := renderToFile("page.js.tmpl", jsPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
-	handlerPath := "/src/app/handlers/" + filename + ".go"
-	if err := renderToFile("handler.go.tmpl", handlerPath, data); err != nil {
-		return errResult(err.Error()), nil
-	}
-
-	endpoint := Endpoint{
-		Method: "GET", Path: path, Handler: toPascal(filename) + "GET",
-		Deps: []string{"read", "write", "cache"}, Auth: authRequired, Kind: "custom",
-	}
-	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+	page := Page{Path: path, File: filename, Title: title, Auth: authRequired}
+	if err := updateManifest(nil, nil, []Page{page}); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(
-		"Created: " + htmlPath + "\nCreated: " + jsPath + "\nCreated: " + handlerPath +
-			"\nRegistered GET " + path + " in api.json + routes_gen.go.\n" +
-			"Add forms with add_js_form.\n\n" + runPatternChecks(),
+		"Created: " + htmlPath + "\nCreated: " + jsPath +
+			"\nRegistered page " + path + " -> static/pages/" + filename + ".html in api.json + pages_gen.go.\n" +
+			"The page is served by the generated pageFile helper — there is no Go handler to implement.\n" +
+			"Add API endpoints with create_handler, and forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
+}
+
+// validatePagePath enforces the page namespace: a human-facing URL, never an
+// API one. This is the exact inverse of create_handler's check, and it is what
+// makes the two tables provably disjoint — no page can shadow an endpoint and
+// no endpoint can shadow a page.
+func validatePagePath(path string) error {
+	if !strings.HasPrefix(path, "/") {
+		return errors.New("page path must start with /")
+	}
+	if path == "/api" || strings.HasPrefix(path, "/api/") {
+		return errors.New("page path must not be under /api/ — that namespace belongs to create_handler and the scaffold tools; give the page a human-facing URL like /projects")
+	}
+	if strings.HasPrefix(path, "/static/") {
+		return errors.New("page path must not be under /static/ — that prefix is the static file server")
+	}
+	return nil
 }
 func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
@@ -763,7 +774,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		Auth:    false, Model: name, Kind: "list",
 		Response: resourceResponse(model, "list"),
 	}
-	if err := updateManifest([]Model{model}, []Endpoint{endpoint}); err != nil {
+	if err := updateManifest([]Model{model}, []Endpoint{endpoint}, nil); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
@@ -859,7 +870,7 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 
 	model := fieldsToModel(name, toPlural(name), fields)
-	if err := updateManifest([]Model{model}, resourceEndpoints(model)); err != nil {
+	if err := updateManifest([]Model{model}, resourceEndpoints(model), nil); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
@@ -934,7 +945,7 @@ CREATE TABLE IF NOT EXISTS mobile_tokens (
 		{Name: "email", Type: "string", Nullable: false},
 		{Name: "created_at", Type: "timestamp", Nullable: false},
 	}}
-	if err := updateManifest([]Model{userModel}, authEndpoints()); err != nil {
+	if err := updateManifest([]Model{userModel}, authEndpoints(), nil); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 
@@ -961,7 +972,7 @@ func handleScaffoldRegistration(ctx context.Context, req mcp.CallToolRequest) (*
 
 	endpoint := Endpoint{Method: "POST", Path: "/api/v1/auth/register", Handler: "RegisterPOST",
 		Deps: []string{"read", "write", "cache"}, Kind: "register"}
-	if err := updateManifest(nil, []Endpoint{endpoint}); err != nil {
+	if err := updateManifest(nil, []Endpoint{endpoint}, nil); err != nil {
 		return errResult("manifest update failed: " + err.Error()), nil
 	}
 

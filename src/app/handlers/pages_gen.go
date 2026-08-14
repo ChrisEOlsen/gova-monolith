@@ -1,0 +1,33 @@
+// Code generated from api.json by gova-builder. DO NOT EDIT.
+package handlers
+
+import (
+	"net/http"
+	"path/filepath"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// pageFile serves a page's static HTML shell.
+//
+// name is a literal from the generated table in RegisterPages below — it is
+// never read from the request, so there is no user-controlled component in the
+// path at all. filepath.Base is a second guard: even a name that somehow
+// carried a separator or a ".." collapses to its last element, so the result
+// can only ever name a file directly inside static/pages.
+//
+// Serving a file is not rendering. No HTML is generated here and no data is
+// interpolated into it — the shell is inert and its JS module fetches
+// everything from /api/v1/.
+func pageFile(name string) http.HandlerFunc {
+	path := "./static/pages/" + filepath.Base(name) + ".html"
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, path)
+	}
+}
+
+// RegisterPages mounts every scaffolded page at its human-facing URL. main.go
+// calls this once and is never hand-edited for page routes. API routes live in
+// routes_gen.go; nothing here is under /api/v1/.
+func RegisterPages(r chi.Router) {
+}

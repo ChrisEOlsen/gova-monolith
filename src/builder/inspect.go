@@ -32,5 +32,13 @@ func buildInspection(m Manifest, onDisk onDiskFiles) inspection {
 			div = append(div, "api.json lists model '"+model.Name+"' but src/app/models/"+toPascal(model.Name)+".go is missing")
 		}
 	}
+	// A registered page whose shell is gone is a route that 404s at runtime —
+	// exactly the class of unreachable-page defect the page table exists to
+	// close, so it is worth surfacing before a build depends on it.
+	for _, page := range m.Pages {
+		if !present(onDisk.Pages, page.File+".html") {
+			div = append(div, "api.json registers page '"+page.Path+"' but src/app/static/pages/"+page.File+".html is missing")
+		}
+	}
 	return inspection{Manifest: m, OnDisk: onDisk, Divergence: div}
 }

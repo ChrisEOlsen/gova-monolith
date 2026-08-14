@@ -22,7 +22,7 @@ func TestCustomEndpointSchemaRoundtrip(t *testing.T) {
 		Deps: []string{"read", "write", "cache"}, Kind: "custom", Summary: "Archive a todo",
 		Request: reqS, Response: respS}
 
-	if err := updateManifestAt(api, handlers, time.Unix(0, 0).UTC(), nil, []Endpoint{ep}); err != nil {
+	if err := updateManifestAt(api, handlers, time.Unix(0, 0).UTC(), nil, []Endpoint{ep}, nil); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	m, _ := readManifestAt(api)
