@@ -67,3 +67,107 @@ func TestCSRF_GetSetsCookie(t *testing.T) {
 		t.Fatal("GET did not set a non-empty csrf_token cookie")
 	}
 }
+
+// PATCH is verified exactly like POST.
+//
+// This is the test the old denylist (`POST || PUT || DELETE`) could not have:
+// it passed against the bug because PATCH was never checked at all. Reverting
+// isSafeMethod to that denylist turns this one red and leaves the four above
+// green, which is the whole point of writing it separately.
+func TestCSRF_MutatingPATCHCookieWrongHeader_Forbidden(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/things/1", nil)
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "abc123"})
+	req.Header.Set("X-CSRF-Token", "wrong")
+	CSRF(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PATCH cookie+wrong-header: want 403, got %d", rec.Code)
+	}
+}
+
+// Every unsafe method the standard library names is verified — including ones
+// nobody has written a handler for yet.
+//
+// The allowlist's value is that it covers methods this file does not enumerate,
+// so enumerating them here would defeat the point of the test. What it CAN
+// assert is that the set of methods let through unverified is exactly the three
+// safe ones, which is a property a future edit cannot widen by accident.
+func TestCSRF_OnlySafeMethodsSkipVerification(t *testing.T) {
+	safe := map[string]bool{http.MethodGet: true, http.MethodHead: true, http.MethodOptions: true}
+	all := []string{
+		http.MethodGet, http.MethodHead, http.MethodOptions,
+		http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
+		http.MethodConnect, http.MethodTrace,
+		"PURGE", "LOCK", // methods no RFC in this app defines — must still fail closed
+	}
+	for _, m := range all {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(m, "/api/v1/things", nil)
+		req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "abc123"})
+		req.Header.Set("X-CSRF-Token", "wrong")
+		CSRF(okHandler()).ServeHTTP(rec, req)
+
+		if safe[m] && rec.Code != http.StatusOK {
+			t.Errorf("%s is safe: want 200, got %d", m, rec.Code)
+		}
+		if !safe[m] && rec.Code != http.StatusForbidden {
+			t.Errorf("%s is unsafe: want 403 (verified), got %d", m, rec.Code)
+		}
+	}
+}
+
+// A request carrying a SESSION cookie and no csrf_token cookie is verified,
+// not waved through.
+//
+// The no-cookie escape exists for native clients, which carry no session
+// either. A browser holding a session but not a csrf_token — the state every
+// browser restart used to produce, back when csrf_token had no MaxAge — is a
+// browser riding an ambient credential and must fail closed. It cannot pass:
+// `token` is minted fresh inside this request and the client has never seen it.
+func TestCSRF_SessionCookieWithoutCSRFCookie_Forbidden(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/things", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "whatever|sig"})
+	CSRF(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("session cookie, no csrf cookie: want 403, got %d", rec.Code)
+	}
+
+	// And it cannot be satisfied by echoing back the cookie the response set,
+	// because a mutating request is not one the cookie is minted on.
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "csrf_token" {
+			t.Fatalf("a mutating request must not mint a csrf_token cookie")
+		}
+	}
+}
+
+// A native client — no session cookie, no csrf_token cookie — still passes.
+// This is the case the whole no-cookie escape exists for, and the hasSession
+// change must not have narrowed it.
+func TestCSRF_NoCookiesAtAll_StillPassesThrough(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/things/1", nil)
+	CSRF(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("native PATCH with no cookies: want 200, got %d", rec.Code)
+	}
+}
+
+// The csrf_token cookie outlives the browser session, so it cannot diverge from
+// the session cookie on a restart and strand a legitimate browser in the
+// fail-closed branch above.
+func TestCSRF_MintedCookieIsPersistent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	CSRF(okHandler()).ServeHTTP(rec, req)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "csrf_token" {
+			if c.MaxAge <= 0 {
+				t.Fatalf("csrf_token must be persistent: MaxAge = %d", c.MaxAge)
+			}
+			return
+		}
+	}
+	t.Fatal("GET did not mint a csrf_token cookie")
+}

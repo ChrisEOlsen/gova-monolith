@@ -16,6 +16,13 @@ type ctxKey string
 
 const userIDKey ctxKey = "user_id"
 
+// SessionCookieName is the one name the session cookie is written, read and
+// cleared under. It is exported because csrf.go needs to ask "is this browser
+// carrying an ambient credential?" — a question CSRF cannot answer without
+// naming the same cookie this file sets, and a second string literal over there
+// is a second thing to keep in sync.
+const SessionCookieName = "gova_session"
+
 type sessionPayload struct {
 	UserID    int64 `json:"uid"`
 	ExpiresAt int64 `json:"exp"`
@@ -36,7 +43,7 @@ func SetSession(w http.ResponseWriter, userID int64, ttl time.Duration) {
 	mac.Write([]byte(encoded))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	http.SetCookie(w, &http.Cookie{
-		Name:     "gova_session",
+		Name:     SessionCookieName,
 		Value:    encoded + "|" + sig,
 		Path:     "/",
 		HttpOnly: true,
@@ -48,7 +55,7 @@ func SetSession(w http.ResponseWriter, userID int64, ttl time.Duration) {
 
 func ClearSession(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:   "gova_session",
+		Name:   SessionCookieName,
 		Value:  "",
 		Path:   "/",
 		MaxAge: -1,
@@ -62,7 +69,7 @@ func UserID(r *http.Request) int64 {
 
 func Auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("gova_session")
+		cookie, err := r.Cookie(SessionCookieName)
 		if err != nil {
 			next.ServeHTTP(w, r)
 			return
