@@ -1,0 +1,274 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"gova/app/cache"
+	"gova/app/db"
+	"gova/app/models"
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE GUARD FOR auth_buckets.go, IN A FILE scaffold_auth DOES NOT OVERWRITE
+// ALONGSIDE THE HANDLERS IT GUARDS.
+//
+// auth.go, mobile_auth.go, auth_test.go and mobile_auth_test.go are all
+// scaffold_auth output and a re-run truncates every one of them. This file and
+// auth_buckets.go are the pair that carries the decision; if a re-run or a hand
+// edit puts a bare clientIP(r) back into either handler, the tests below go red.
+//
+// TWO COVERAGE HOLES were found by mutation while writing these, and both are
+// the reason this file is longer than "does A wipe B":
+//
+//   - A ONE-SIDED revert (one handler back to a bare IP, the other still
+//     namespaced) leaves the two endpoints distinct FROM EACH OTHER, so every
+//     behavioural assertion stays green while one of them has silently rejoined
+//     the shared namespace that a third caller would land in. Only reading the
+//     key the handler actually wrote into rate_limits catches it — and that is
+//     precisely the state a scaffold re-run over one of the two files leaves
+//     behind.
+//   - Deleting ClearAttempts outright leaves everything green, because a limiter
+//     that never forgets is strictly harsher and no isolation assertion notices.
+//     The "clears its OWN bucket" half needs its own test or it is not covered
+//     at all.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const bucketTestSchema = `
+CREATE TABLE users (
+	id INTEGER PRIMARY KEY,
+	name TEXT NOT NULL,
+	email TEXT NOT NULL UNIQUE,
+	password_hash TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE rate_limits (
+	ip TEXT NOT NULL,
+	attempts INTEGER DEFAULT 0,
+	locked_until DATETIME,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY (ip)
+);
+CREATE TABLE mobile_tokens (
+	token_hash TEXT PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	expires_at DATETIME NOT NULL
+);`
+
+func bucketBody(email, password string) *bytes.Buffer {
+	b, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	return bytes.NewBuffer(b)
+}
+
+// bucketKeys returns every key currently present in rate_limits.
+//
+// Reading the STORED key, rather than only observing behaviour, is what catches
+// a one-sided revert. See the banner.
+func bucketKeys(t *testing.T, testDB *db.DB) []string {
+	t.Helper()
+	rows, err := testDB.Read.Query("SELECT ip FROM rate_limits ORDER BY ip")
+	if err != nil {
+		t.Fatalf("read rate_limits: %v", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// seedBucketUser creates one account both endpoints can authenticate.
+func seedBucketUser(t *testing.T, testDB *db.DB, appCache *cache.Cache) {
+	t.Helper()
+	m := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	if _, err := m.Create("Ada", "ada@example.com", "correct-horse-battery-staple"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+}
+
+// The cookie login writes a key that names the cookie login — and nothing else.
+//
+// This is the assertion a one-sided revert cannot survive: the key "127.0.0.1"
+// is a perfectly working per-IP bucket, it isolates this endpoint from the
+// bearer one in every behavioural sense, and it is the shared namespace.
+func TestLoginBucketKey_IsNamespaced(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "wrong"))
+	req.RemoteAddr = "203.0.113.7:41234"
+	LoginPOST(testDB.Read, testDB.Write, appCache)(httptest.NewRecorder(), req)
+
+	keys := bucketKeys(t, testDB)
+	want := loginBucket("203.0.113.7")
+	if len(keys) != 1 || keys[0] != want {
+		t.Fatalf("cookie login wrote %v, want [%s]", keys, want)
+	}
+}
+
+// The bearer login writes a key that names the bearer login — and nothing else.
+func TestLoginTokenBucketKey_IsNamespaced(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", bucketBody("ada@example.com", "wrong"))
+	req.RemoteAddr = "203.0.113.7:41234"
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(httptest.NewRecorder(), req)
+
+	keys := bucketKeys(t, testDB)
+	want := loginTokenBucket("203.0.113.7")
+	if len(keys) != 1 || keys[0] != want {
+		t.Fatalf("bearer login wrote %v, want [%s]", keys, want)
+	}
+}
+
+// A SUCCESS ON THE BEARER LOGIN DOES NOT ERASE THE COOKIE LOGIN'S FAILURES.
+//
+// This is the bypass itself, driven through both real handlers, and stated the
+// way it was measured rather than as a single status assertion: run the paced
+// attack for eight rounds and COUNT how many guesses reached bcrypt.
+//
+//	4 wrong passwords on /auth/login   -> attempts climbs, never to 5
+//	1 correct /auth/login_token        -> ClearAttempts
+//	repeat
+//
+// Pacing at four is what makes it work: at five the shared lock refuses
+// login_token too, and the attacker loses the eraser. With one bucket, the
+// counter is reset before it can ever trip — 32 guesses land against a
+// documented budget of 5, the lock is never armed, nothing is logged, and
+// rate_limits looks like a quiet system the whole time.
+//
+// A plain "the next request is 429" assertion is NOT enough here. The check
+// runs before the failure is recorded, so the guess that trips the limit still
+// returns 401 and only the one after it is refused — an off-by-one that makes a
+// single-status test easy to write in a way that passes against the bug.
+func TestLoginTokenSuccess_DoesNotClearCookieLoginFailures(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+
+	login := LoginPOST(testDB.Read, testDB.Write, appCache)
+	loginToken := MobileLoginPOST(testDB.Read, testDB.Write, appCache)
+
+	reached, refused := 0, 0
+	for round := 0; round < 8; round++ {
+		for i := 0; i < 4; i++ {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "wrong"))
+			req.RemoteAddr = "203.0.113.7:41234"
+			rec := httptest.NewRecorder()
+			login(rec, req)
+			switch rec.Code {
+			case http.StatusUnauthorized:
+				reached++
+			case http.StatusTooManyRequests:
+				refused++
+			default:
+				t.Fatalf("round %d guess %d: unexpected %d — %s", round, i, rec.Code, rec.Body.String())
+			}
+		}
+		// The attacker's own account, on the other endpoint. It must keep
+		// succeeding — that is what makes this an eraser and not a lockout —
+		// and it must not touch the cookie login's bucket.
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+		req.RemoteAddr = "203.0.113.7:41234"
+		rec := httptest.NewRecorder()
+		loginToken(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("round %d: bearer login got %d, want 200 — %s", round, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Five guesses reach bcrypt: four in the first round, then the one that
+	// arms the lock. Everything after is refused.
+	if reached != 5 {
+		t.Fatalf("%d of %d guesses reached bcrypt against a budget of 5 (%d refused) — the two logins share one bucket",
+			reached, reached+refused, refused)
+	}
+}
+
+// The mirror: a cookie-login lockout must not lock the mobile app out too.
+func TestCookieLoginLockout_DoesNotLockTheBearerEndpoint(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+
+	login := LoginPOST(testDB.Read, testDB.Write, appCache)
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "wrong"))
+		req.RemoteAddr = "203.0.113.7:41234"
+		login(httptest.NewRecorder(), req)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "203.0.113.7:41234"
+	rec := httptest.NewRecorder()
+	login(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("cookie login should be locked: got %d, want 429", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "203.0.113.7:41234"
+	rec = httptest.NewRecorder()
+	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bearer login should be unaffected: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// EACH ENDPOINT STILL CLEARS ITS OWN BUCKET ON SUCCESS.
+//
+// Without this, deleting ClearAttempts entirely passes every test above: a
+// limiter that never forgets is strictly harsher than one that does, and no
+// isolation assertion notices. It is also the property a real user depends on —
+// four typos followed by the right password must not leave them one mistake
+// from a lockout for the next fifteen minutes.
+func TestLoginSuccess_ClearsItsOwnBucket(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+	login := LoginPOST(testDB.Read, testDB.Write, appCache)
+
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "wrong"))
+		req.RemoteAddr = "203.0.113.7:41234"
+		login(httptest.NewRecorder(), req)
+	}
+	if keys := bucketKeys(t, testDB); len(keys) != 1 {
+		t.Fatalf("expected one bucket row after failures, got %v", keys)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "203.0.113.7:41234"
+	rec := httptest.NewRecorder()
+	login(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: got %d, want 200", rec.Code)
+	}
+	if keys := bucketKeys(t, testDB); len(keys) != 0 {
+		t.Fatalf("a successful login must clear its own bucket, still holding %v", keys)
+	}
+}
+
+// The two key functions cannot collide, whatever the address.
+//
+// A cheap unit assertion, and the one that would catch someone "simplifying"
+// both helpers back to a shared prefix.
+func TestBucketKeys_AreDistinct(t *testing.T) {
+	for _, ip := range []string{"203.0.113.7", "::1", "", "login_token:203.0.113.7"} {
+		if loginBucket(ip) == loginTokenBucket(ip) {
+			t.Fatalf("bucket keys collide for %q: %q", ip, loginBucket(ip))
+		}
+	}
+}

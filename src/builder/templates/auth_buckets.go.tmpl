@@ -1,0 +1,70 @@
+package handlers
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RATE-LIMIT BUCKET KEYS FOR THE TWO LOGIN ENDPOINTS.
+//
+// `rate_limits` is keyed on one column, `ClearAttempts` is
+// `DELETE FROM rate_limits WHERE ip = ?`, and a SUCCESSFUL login calls it. So
+// THE KEY IS THE ISOLATION. Two actions that spell the key the same way are one
+// action as far as the limiter is concerned, and a success on either erases the
+// failures of both.
+//
+// `/api/v1/auth/login` and `/api/v1/auth/login_token` are the same credential
+// check reached two ways — cookie for the browser, bearer for the mobile app —
+// and both used to key on a bare IP. The bypass that followed is not
+// theoretical and does not need the lock to trip:
+//
+//	4 wrong passwords against any account  -> attempts = 4, no lock
+//	1 correct login_token with an account
+//	  the attacker legitimately holds      -> ClearAttempts, the ROW IS GONE
+//	4 more wrong passwords                 -> attempts = 4 again
+//	  ...
+//
+// Unbounded guessing at four per round, forever, and the fifth attempt is never
+// reached — so the limiter never records a lock, never logs, and reports itself
+// healthy the whole time. Pacing at four rather than five is what an attacker
+// does because at five the shared lock refuses login_token as well; the shared
+// bucket is what makes both halves of that work. Measured in a project built
+// from this template, driving the real chi route table: 40 of 40 guesses
+// reached bcrypt against a documented budget of 5. Namespaced, the same
+// sequence gives 5 through and 35 refused.
+//
+// It needs one account of the attacker's own — a self-service signup on any app
+// that also ran scaffold_registration, which is the pairing this tool set
+// recommends.
+//
+// Namespacing also fixes the mirror nuisance: five bad browser logins from one
+// office NAT would otherwise lock the MOBILE app for every user on that address.
+//
+// ─── why this is not two lines inside the handlers ───────────────────────────
+//
+// handlers/auth.go and handlers/mobile_auth.go are scaffold_auth output, and
+// every scaffold writes with os.Create — a re-run TRUNCATES them, along with
+// both their _test.go files. A guard living inside the file it guards cannot
+// survive the event it guards against. Keeping the keys here, with the test in
+// handlers/auth_buckets_test.go, means the decision and its proof are in files
+// whose whole content is this one concern: a re-run rewrites them with the same
+// correct content, and a hand-edit that reverts a call site goes red. That test
+// is the actual fail-loud mechanism — an unused function is not a Go compile
+// error, so the file alone would not notice.
+//
+// Same reasoning that put clientIP in handlers/clientip.go. The customization
+// left inside the two scaffolded handlers is deliberately one line each.
+//
+// ─── the spelling ────────────────────────────────────────────────────────────
+//
+// Bare action name plus the IP. The action names are the endpoints' own last
+// path segments, so the key a row carries names the route that wrote it. Any
+// later endpoint that counts failures — registration, password reset, an email
+// resend — gets its own function here rather than reaching for a bare IP.
+//
+// The IP comes from clientIP (handlers/clientip.go), which has the trusted-proxy
+// notion: behind a reverse proxy a key built from RemoteAddr would be ONE bucket
+// for every caller on the planet.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// loginBucket is POST /api/v1/auth/login — the cookie login.
+func loginBucket(ip string) string { return "login:" + ip }
+
+// loginTokenBucket is POST /api/v1/auth/login_token — the bearer login.
+func loginTokenBucket(ip string) string { return "login_token:" + ip }

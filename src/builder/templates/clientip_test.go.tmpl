@@ -1,0 +1,150 @@
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// clientIP IS THE RATE LIMITER'S BUCKET KEY, so each case below is a security
+// property rather than a formatting one. See the banner in clientip.go.
+//
+// Everything here runs against the DEFAULT trusted set. TRUSTED_PROXY_CIDRS is
+// read under a sync.Once, so a test that set it would silently decide the value
+// for every other test in the package depending on run order — which is exactly
+// the kind of thing this file exists to catch, not to introduce.
+// ═════════════════════════════════════════════════════════════════════════════
+
+func ipFor(t *testing.T, remoteAddr string, headers map[string]string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	req.RemoteAddr = remoteAddr
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return clientIP(req)
+}
+
+// A DIRECT CALLER DOES NOT GET TO NAME ITSELF.
+//
+// The old code returned CF-Connecting-IP from any peer, so a caller that could
+// reach the origin minted a fresh five-attempt bucket per request — unlimited
+// guessing with the limiter reporting itself healthy.
+func TestClientIP_UntrustedPeerCannotSpoofItsAddress(t *testing.T) {
+	got := ipFor(t, "203.0.113.7:41234", map[string]string{
+		"CF-Connecting-IP": "198.51.100.1",
+		"X-Forwarded-For":  "198.51.100.2",
+	})
+	if got != "203.0.113.7" {
+		t.Fatalf("untrusted peer: got %q, want the peer address 203.0.113.7", got)
+	}
+}
+
+// A spoofed header from an untrusted peer cannot even mint a SECOND bucket:
+// every request from that peer keys on the peer, whatever it claims.
+func TestClientIP_UntrustedPeerGetsOneBucketPerPeer(t *testing.T) {
+	a := ipFor(t, "203.0.113.7:1", map[string]string{"CF-Connecting-IP": "198.51.100.1"})
+	b := ipFor(t, "203.0.113.7:2", map[string]string{"CF-Connecting-IP": "198.51.100.99"})
+	if a != b {
+		t.Fatalf("two spoofed headers from one peer produced two buckets: %q and %q", a, b)
+	}
+}
+
+// Behind a trusted proxy, the edge's header is what identifies the caller.
+func TestClientIP_TrustedProxyUsesCFConnectingIP(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{"CF-Connecting-IP": "198.51.100.1"})
+	if got != "198.51.100.1" {
+		t.Fatalf("trusted proxy + CF header: got %q, want 198.51.100.1", got)
+	}
+}
+
+// An unparseable CF-Connecting-IP is not a bucket key.
+//
+// Taken as a raw string it would let one caller occupy arbitrarily many
+// buckets by varying the garbage.
+func TestClientIP_TrustedProxyRejectsUnparseableCFHeader(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{
+		"CF-Connecting-IP": "not-an-address",
+		"X-Forwarded-For":  "198.51.100.1",
+	})
+	if got != "198.51.100.1" {
+		t.Fatalf("garbage CF header should fall through to XFF: got %q", got)
+	}
+}
+
+// WITHOUT THE CF HEADER, X-Forwarded-For keeps the limiter per-caller.
+//
+// This is the case that used to collapse every visitor on the internet into one
+// bucket keyed on the proxy's container address.
+func TestClientIP_FallsBackToXForwardedFor(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{"X-Forwarded-For": "198.51.100.1"})
+	if got != "198.51.100.1" {
+		t.Fatalf("XFF fallback: got %q, want 198.51.100.1", got)
+	}
+}
+
+// RIGHT-MOST UNTRUSTED, not left-most.
+//
+// A client prepends whatever it likes to X-Forwarded-For, so every entry left
+// of the first hop we trust is attacker-authored. Reading left-most here would
+// hand the attacker the bucket key.
+func TestClientIP_XForwardedForTakesTheRightmostUntrustedEntry(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{
+		"X-Forwarded-For": "10.9.9.9, 198.51.100.250, 198.51.100.1, 172.18.0.4",
+	})
+	if got != "198.51.100.1" {
+		t.Fatalf("got %q, want the rightmost non-proxy entry 198.51.100.1", got)
+	}
+}
+
+// Garbage in the header stops the walk rather than being skipped past.
+//
+// Skipping would let a client push the real boundary leftward by inserting
+// junk, which is the same attack the rightmost rule exists to stop.
+func TestClientIP_MalformedXForwardedForEntryStopsTheWalk(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{
+		"X-Forwarded-For": "198.51.100.1, ../../etc/passwd",
+	})
+	if got != "172.18.0.5" {
+		t.Fatalf("malformed XFF should fall back to the peer: got %q", got)
+	}
+}
+
+// An XFF listing only our own hops yields nothing usable, and we fall back to
+// the peer rather than bucketing on a proxy address that names no caller.
+func TestClientIP_XForwardedForOfOnlyProxiesFallsBackToPeer(t *testing.T) {
+	got := ipFor(t, "172.18.0.5:53000", map[string]string{"X-Forwarded-For": "172.18.0.4, 10.0.0.9"})
+	if got != "172.18.0.5" {
+		t.Fatalf("all-proxy XFF: got %q, want the peer 172.18.0.5", got)
+	}
+}
+
+// AN IPv6 PEER IS ONE CALLER, NOT TWO.
+//
+// RemoteAddr is "[::1]:54321" and the last colon is inside the brackets, so the
+// hand-rolled strings.LastIndex(":") this replaces returned "[::1]" — brackets
+// and all — while other paths spell the same host "::1". Two spellings of one
+// host is two buckets, which is a doubled budget for anyone who notices.
+func TestClientIP_IPv6PeerHasNoBrackets(t *testing.T) {
+	if got := ipFor(t, "[2001:db8::1]:54321", nil); got != "2001:db8::1" {
+		t.Fatalf("IPv6 peer: got %q, want 2001:db8::1", got)
+	}
+	if got := ipFor(t, "[2001:db8::1]:1", nil); got != ipFor(t, "[2001:db8::1]:2", nil) {
+		t.Fatal("one IPv6 host produced two bucket keys")
+	}
+}
+
+// A RemoteAddr with no port at all must not lose its last octet.
+func TestClientIP_RemoteAddrWithoutPort(t *testing.T) {
+	if got := ipFor(t, "203.0.113.7", nil); got != "203.0.113.7" {
+		t.Fatalf("portless RemoteAddr: got %q, want 203.0.113.7", got)
+	}
+}
+
+// Loopback is a trusted hop, which is what makes a local reverse proxy work.
+func TestClientIP_LoopbackIsTrusted(t *testing.T) {
+	if got := ipFor(t, "127.0.0.1:8080", map[string]string{"CF-Connecting-IP": "198.51.100.1"}); got != "198.51.100.1" {
+		t.Fatalf("loopback proxy: got %q, want 198.51.100.1", got)
+	}
+}

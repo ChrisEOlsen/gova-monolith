@@ -1,0 +1,222 @@
+package handlers
+
+import (
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WHOSE IP IS THIS? — the rate limiter's bucket key, and therefore a security
+// decision, not a logging convenience.
+//
+// What this replaces was two lines long:
+//
+//	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" { return ip }
+//	return r.RemoteAddr minus its port
+//
+// and it had two defects that point in opposite directions, which is why
+// neither is visible while you are thinking about the other.
+//
+//  1. THE HEADER WAS TRUSTED FROM ANY PEER. `CF-Connecting-IP` is a request
+//     header like any other: a caller that can reach the origin sets it to
+//     whatever it likes and gets a FRESH five-attempt bucket on every request,
+//     which is unlimited password guessing with the limiter still reporting
+//     itself as working. Nothing in the code stopped that — the only thing
+//     stopping it was that docker-compose.yml publishes no port for `app` and
+//     binds the proxy to 127.0.0.1. A guarantee that lives in a compose file is
+//     not a guarantee the code has.
+//
+//  2. WITHOUT THE HEADER, EVERY CALLER SHARED ONE BUCKET. Behind a reverse
+//     proxy, RemoteAddr is the proxy's container address for every request on
+//     the planet. Because it is FAILURES that get counted, five bad logins from
+//     one anonymous actor lock login for the entire deployment for fifteen
+//     minutes, repeatable at zero cost, with nothing in the log saying why.
+//     Traefik sets X-Forwarded-For by default and the old code never looked at
+//     it. Verified live in a project built from this template: every request
+//     arrived from 172.18.0.5.
+//
+// The fix is one trusted-peer notion used for both halves:
+//
+//   - RemoteAddr is NOT a trusted proxy  -> ignore every header, use RemoteAddr.
+//     A direct caller does not get to name itself.
+//   - RemoteAddr IS a trusted proxy      -> CF-Connecting-IP if it is a valid
+//     address, else the RIGHT-MOST X-Forwarded-For entry that is not itself a
+//     trusted hop, else RemoteAddr with a throttled WARN.
+//
+// Right-most-untrusted rather than left-most: a client can prepend anything it
+// likes to X-Forwarded-For, and every value to the left of the first hop we
+// trust is attacker-authored. Walking from the right and stopping at the first
+// entry that is not one of our own proxies is the only reading of that header
+// that an attacker cannot steer.
+//
+// THE WARNING IS THE FAIL-SAFE, and it has to be per-request because headers
+// are per-request — a startup check cannot see that the edge stopped sending
+// CF-Connecting-IP. Throttled to one line a minute so the observable failure
+// cannot itself become the outage.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// defaultTrustedProxyCIDRs is "the container network and loopback".
+//
+// It is the default deployment's real shape written down: `app` publishes no
+// host port (docker-compose.yml), so the only peers that can open a socket to
+// it are on the Docker bridge. A public address in RemoteAddr therefore means
+// something changed, and the safe reading of that is "this is a direct caller,
+// trust nothing it says".
+//
+// Overridable with TRUSTED_PROXY_CIDRS (comma-separated) for a deployment whose
+// ingress sits somewhere else. Setting it to an empty-but-present value is the
+// way to say "there is no proxy; RemoteAddr is the client".
+var defaultTrustedProxyCIDRs = []string{
+	"127.0.0.0/8",
+	"::1/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16",
+	"fc00::/7",
+	"fe80::/10",
+}
+
+var (
+	trustedProxiesOnce sync.Once
+	trustedProxyNets   []*net.IPNet
+)
+
+// trustedProxies parses the trusted set once per process.
+//
+// Parsed lazily rather than in an init(), so a test can set the environment
+// variable before the first call without depending on package initialisation
+// order.
+func trustedProxies() []*net.IPNet {
+	trustedProxiesOnce.Do(func() {
+		specs := defaultTrustedProxyCIDRs
+		if raw, ok := os.LookupEnv("TRUSTED_PROXY_CIDRS"); ok {
+			specs = nil
+			for _, part := range strings.Split(raw, ",") {
+				if part = strings.TrimSpace(part); part != "" {
+					specs = append(specs, part)
+				}
+			}
+		}
+		for _, spec := range specs {
+			_, netw, err := net.ParseCIDR(spec)
+			if err != nil {
+				// Loud, and then ignored. A typo in this variable must not make
+				// the process refuse to boot (that is an outage caused by a
+				// logging-adjacent setting), but it must not silently widen or
+				// narrow the trusted set either.
+				log.Printf("handlers: TRUSTED_PROXY_CIDRS: ignoring unparseable entry %q: %v", spec, err)
+				continue
+			}
+			trustedProxyNets = append(trustedProxyNets, netw)
+		}
+	})
+	return trustedProxyNets
+}
+
+// isTrustedProxy reports whether addr is one of our own ingress hops.
+func isTrustedProxy(addr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(addr))
+	if ip == nil {
+		return false
+	}
+	for _, netw := range trustedProxies() {
+		if netw.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerIP is RemoteAddr without its port, tolerating an address that has none.
+//
+// net.SplitHostPort, not strings.LastIndex(":"): an IPv6 RemoteAddr is
+// "[::1]:54321" and the last colon is inside the brackets, so the hand-rolled
+// version this replaces returned "[::1]" — brackets and all — as the bucket key
+// for one caller and "::1" for another spelling of the same host.
+func peerIP(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(strings.TrimSpace(remoteAddr), "[]")
+}
+
+// warnOnce throttles the "no forwarded client address" warning.
+var warnOnce struct {
+	sync.Mutex
+	last time.Time
+}
+
+func warnMissingForwardedIP(peer string) {
+	warnOnce.Lock()
+	defer warnOnce.Unlock()
+	if time.Since(warnOnce.last) < time.Minute {
+		return
+	}
+	warnOnce.last = time.Now()
+	log.Printf("handlers: WARNING request arrived from trusted proxy %s carrying neither CF-Connecting-IP nor a "+
+		"usable X-Forwarded-For; every caller is now sharing ONE rate-limit bucket keyed on the proxy. "+
+		"Check that the edge proxy is in front of this origin. (throttled to 1/min)", peer)
+}
+
+// clientIP returns the address the rate limiter should bucket this request
+// under. See the banner at the top of this file for why it is shaped this way.
+func clientIP(r *http.Request) string {
+	peer := peerIP(r.RemoteAddr)
+
+	// A direct caller names itself and nothing else. This is the half that stops
+	// a spoofed CF-Connecting-IP from minting an unlimited supply of buckets.
+	if !isTrustedProxy(peer) {
+		return peer
+	}
+
+	// Cloudflare's own header, which the edge OVERWRITES on every request, so a
+	// client-supplied value never survives to here on a Cloudflare-fronted path.
+	// Validated as an address rather than taken as a string: an unparseable
+	// value is a header we do not understand, and inventing a bucket key out of
+	// it would let one caller occupy arbitrarily many.
+	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+		if net.ParseIP(cf) != nil {
+			return cf
+		}
+	}
+
+	// Traefik sets X-Forwarded-For by default, so this is the fallback that
+	// keeps the limiter per-caller when the CF header is missing — the case that
+	// used to collapse every visitor into one bucket.
+	if fwd := forwardedFor(r.Header.Get("X-Forwarded-For")); fwd != "" {
+		warnMissingForwardedIP(peer)
+		return fwd
+	}
+
+	warnMissingForwardedIP(peer)
+	return peer
+}
+
+// forwardedFor returns the right-most X-Forwarded-For entry that is not one of
+// our own proxies, or "" if there is none.
+func forwardedFor(header string) string {
+	parts := strings.Split(header, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := strings.Trim(strings.TrimSpace(parts[i]), "[]")
+		if candidate == "" {
+			continue
+		}
+		if net.ParseIP(candidate) == nil {
+			// A malformed entry means the header is not one we can reason
+			// about. Stop rather than skipping past it: skipping would let a
+			// client push the real boundary leftward by inserting garbage.
+			return ""
+		}
+		if isTrustedProxy(candidate) {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}

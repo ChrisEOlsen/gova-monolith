@@ -82,11 +82,22 @@ func TestLoginPOST_RateLimited(t *testing.T) {
 	}
 	// Drive the rate limiter directly through its own recording method
 	// rather than 5 real HTTP round trips against a real clock.
+	//
+	// Armed under loginBucket(...), not a bare address: this endpoint's bucket
+	// is namespaced so that a success on /auth/login_token cannot erase its
+	// failures (handlers/auth_buckets.go). Arming a bare "203.0.113.1" here
+	// would arm a bucket no handler reads, and this test would pass a build in
+	// which the limiter was wired to nothing.
 	for i := 0; i < 5; i++ {
-		userModel.RecordFailedAttempt("203.0.113.1")
+		userModel.RecordFailedAttempt(loginBucket("203.0.113.1"))
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	// The production shape: the request reaches the origin FROM the reverse
+	// proxy, carrying the edge's header. clientIP only believes CF-Connecting-IP
+	// when the peer is a trusted hop (handlers/clientip.go) — a request that
+	// merely sets the header does not get to name itself, which is the point.
+	req.RemoteAddr = "172.18.0.5:53000"
 	req.Header.Set("CF-Connecting-IP", "203.0.113.1")
 	rec := httptest.NewRecorder()
 

@@ -943,6 +943,17 @@ CREATE TABLE IF NOT EXISTS mobile_tokens (
 		{"mobile_token_model.go.tmpl", "/src/app/models/MobileToken.go"},
 		{"auth_handler.go.tmpl", "/src/app/handlers/auth.go"},
 		{"auth_test.go.tmpl", "/src/app/handlers/auth_test.go"},
+		// clientip.go and auth_buckets.go carry the two decisions the login
+		// handlers are only ONE LINE of each: whose address is the rate-limit
+		// bucket key, and which action that bucket belongs to. They live in
+		// their own files, with their own tests, because a scaffold_auth re-run
+		// truncates auth.go, mobile_auth.go and both their _test.go files — a
+		// guard inside the file it guards cannot survive the event it guards
+		// against.
+		{"clientip.go.tmpl", "/src/app/handlers/clientip.go"},
+		{"clientip_test.go.tmpl", "/src/app/handlers/clientip_test.go"},
+		{"auth_buckets.go.tmpl", "/src/app/handlers/auth_buckets.go"},
+		{"auth_buckets_test.go.tmpl", "/src/app/handlers/auth_buckets_test.go"},
 		{"logout_handler.go.tmpl", "/src/app/handlers/logout.go"},
 		{"login_page.html.tmpl", "/src/app/static/pages/login.html"},
 		{"login.js.tmpl", "/src/app/static/js/login.js"},

@@ -39,7 +39,10 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 			jsonError(w, "email and password are required", http.StatusBadRequest)
 			return
 		}
-		ip := clientIP(r)
+		// The BEARER login's own bucket. Not a bare clientIP(r): ClearAttempts
+		// deletes by key, so sharing a key with the cookie login lets a success
+		// on either endpoint erase the other's failures. See auth_buckets.go.
+		ip := loginTokenBucket(clientIP(r))
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
 

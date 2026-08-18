@@ -25,20 +25,6 @@ func mustDummyHash() []byte {
 	return h
 }
 
-// clientIP prefers CF-Connecting-IP (set by Cloudflare's edge and not
-// spoofable through the tunnel, the deploy path this template targets)
-// and falls back to the raw peer address for local/direct deployments.
-func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
-		return ip
-	}
-	ip := r.RemoteAddr
-	if i := strings.LastIndex(ip, ":"); i > 0 {
-		ip = ip[:i]
-	}
-	return ip
-}
-
 func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -51,7 +37,10 @@ func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc 
 		}
 		email := strings.TrimSpace(body.Email)
 		password := body.Password
-		ip := clientIP(r)
+		// The COOKIE login's own bucket. Not a bare clientIP(r): ClearAttempts
+		// deletes by key, so sharing a key with the bearer login lets a success
+		// on either endpoint erase the other's failures. See auth_buckets.go.
+		ip := loginBucket(clientIP(r))
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
 

@@ -593,3 +593,82 @@ func TestRenderPagesTest_IsValidGoAndTablesThePages(t *testing.T) {
 	}
 	parseAsGo(t, "pages_gen_test.go", empty)
 }
+
+func TestClientIPTemplate_IsValidGo(t *testing.T) {
+	renderAndParse(t, "clientip.go.tmpl", newData("user", nil))
+	renderAndParse(t, "clientip_test.go.tmpl", newData("user", nil))
+}
+
+func TestAuthBucketsTemplate_IsValidGo(t *testing.T) {
+	renderAndParse(t, "auth_buckets.go.tmpl", newData("user", nil))
+	renderAndParse(t, "auth_buckets_test.go.tmpl", newData("user", nil))
+}
+
+// TestAuthHandlerTemplates_NamespaceTheirRateLimitBuckets is the template-level
+// half of the guard that handlers/auth_buckets_test.go carries in the generated
+// app.
+//
+// rate_limits has ONE key column and ClearAttempts is a DELETE by that key, so
+// two endpoints that spell the key the same way are one bucket — and a success
+// on either erases the other's failures. /auth/login and /auth/login_token are
+// the same credential check reached two ways, so keying both on a bare
+// clientIP(r) let an attacker pace four wrong passwords, clear the row with one
+// correct login_token against an account they hold, and guess forever without
+// the counter ever reaching five. Measured before the fix: 40 of 40 guesses
+// reached bcrypt against a documented budget of 5.
+//
+// The generated test proves the behaviour; this one proves the TEMPLATE cannot
+// regress to emitting it, which the generated test cannot do — a scaffold_auth
+// re-run overwrites the generated files with whatever these templates say.
+func TestAuthHandlerTemplates_NamespaceTheirRateLimitBuckets(t *testing.T) {
+	for _, c := range []struct{ tmpl, want string }{
+		{"auth_handler.go.tmpl", "ip := loginBucket(clientIP(r))"},
+		{"mobile_auth_handler.go.tmpl", "ip := loginTokenBucket(clientIP(r))"},
+	} {
+		out := renderAndParse(t, c.tmpl, newData("user", nil))
+		if !strings.Contains(out, c.want) {
+			t.Errorf("%s must key its limiter with %q", c.tmpl, c.want)
+		}
+		if strings.Contains(out, "ip := clientIP(r)") {
+			t.Errorf("%s keys its rate limiter on a bare clientIP(r) — that is one shared bucket "+
+				"with the other login endpoint, and a success on either erases both", c.tmpl)
+		}
+	}
+}
+
+// TestAuthHandlerTemplate_DoesNotDefineClientIP keeps the trusted-proxy logic in
+// the file that carries its reasoning.
+//
+// clientIP used to be eleven lines inside auth_handler.go.tmpl, where it read as
+// a logging convenience. It is the rate limiter's bucket key: it decides whether
+// a caller can mint unlimited buckets by setting a header, and whether every
+// caller behind the proxy shares one. A re-run of scaffold_auth truncates
+// auth.go, so a decision left in there is a decision with no guard.
+func TestAuthHandlerTemplate_DoesNotDefineClientIP(t *testing.T) {
+	out := renderAndParse(t, "auth_handler.go.tmpl", newData("user", nil))
+	if strings.Contains(out, "func clientIP(") {
+		t.Error("clientIP belongs in clientip.go.tmpl, with its trusted-proxy reasoning and its own tests")
+	}
+}
+
+// TestClientIPTemplate_HasATrustedPeerNotion pins the three properties the two
+// old lines lacked, at the template level.
+func TestClientIPTemplate_HasATrustedPeerNotion(t *testing.T) {
+	out := renderAndParse(t, "clientip.go.tmpl", newData("user", nil))
+	for _, want := range []string{
+		// A direct caller does not get to name itself with a header.
+		"if !isTrustedProxy(peer) {",
+		// The header is validated as an address, not taken as a string.
+		"net.ParseIP(cf) != nil",
+		// The fallback that stops every caller sharing the proxy's bucket.
+		`forwardedFor(r.Header.Get("X-Forwarded-For"))`,
+		// Headers are per-request, so the fail-safe has to be too.
+		"warnMissingForwardedIP(peer)",
+		// IPv6: "[::1]:5432" is not split on the last colon.
+		"net.SplitHostPort(remoteAddr)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("clientip.go.tmpl is missing %q", want)
+		}
+	}
+}
