@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -84,16 +85,53 @@ func normalizeSQLType(t string) string {
 	return t
 }
 
-// expectedSQLType mirrors the sqlType funcMap helper in main.go.
-func expectedSQLType(fieldType string) string {
+// acceptedSQLTypes lists the normalized column types a declared field type may
+// legitimately sit on. It mirrors the sqlType funcMap helper in main.go.
+//
+// A list rather than one value because of `timestamp`: SQLite has no date type,
+// so a DATETIME column is a convention, and the same column is spelled DATETIME
+// by one author and TEXT by another. Both store the identical bytes and both
+// scan into models.Time, so refusing one of them would be pedantry that pushes
+// the author back to declaring the field a `string` — which is the defect this
+// field type exists to remove.
+func acceptedSQLTypes(fieldType string) []string {
 	switch fieldType {
 	case "int", "boolean":
-		return "INTEGER"
+		return []string{"INTEGER"}
 	case "float":
-		return "REAL"
+		return []string{"REAL"}
+	case "timestamp":
+		return []string{"DATETIME", "TEXT", "DATE", "TIMESTAMP"}
 	default:
-		return "TEXT"
+		return []string{"TEXT"}
 	}
+}
+
+// knownFieldTypes is every type a field declaration may name.
+//
+// Enforced because parseFields has no error return and an unrecognised type
+// falls through goTypeFor's default to `string`. So `updated_at:timestmap`
+// silently generated a string column, which is precisely the bug the timestamp
+// type was added to fix, arriving by typo instead. Semantic formats
+// (name:email and friends) are resolved to `string` before this runs and are
+// deliberately not listed here.
+var knownFieldTypes = map[string]bool{
+	"string":    true,
+	"int":       true,
+	"boolean":   true,
+	"float":     true,
+	"password":  true,
+	"timestamp": true,
+}
+
+func validateFieldTypes(fields []Field) error {
+	for _, f := range fields {
+		if !knownFieldTypes[f.Type] {
+			return fmt.Errorf("field %q has unknown type %q — use one of: boolean, float, int, password, string, timestamp",
+				f.Name, f.Type)
+		}
+	}
+	return nil
 }
 
 // applySchemaAt validates declared fields against the real table and fills in
@@ -111,6 +149,10 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 		return nil, fmt.Errorf("table %q does not exist — run execute_sql to create it before scaffolding", table)
 	}
 
+	if err := validateFieldTypes(fields); err != nil {
+		return nil, err
+	}
+
 	byName := make(map[string]column, len(cols))
 	names := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -125,9 +167,10 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 			return nil, fmt.Errorf("field %q is not a column of table %q (columns: %s)",
 				f.Name, table, strings.Join(names, ", "))
 		}
-		if want := expectedSQLType(f.Type); c.SQLType != want {
+		accepted := acceptedSQLTypes(f.Type)
+		if !slices.Contains(accepted, c.SQLType) {
 			return nil, fmt.Errorf("field %q declared as %s (expects %s) but column %q.%s is %s",
-				f.Name, f.Type, want, table, f.Name, c.SQLType)
+				f.Name, f.Type, strings.Join(accepted, " or "), table, f.Name, c.SQLType)
 		}
 		if f.Type == "password" && !c.NotNull {
 			return nil, fmt.Errorf("field %q is a password field but column %q.%s is nullable — declare it NOT NULL",

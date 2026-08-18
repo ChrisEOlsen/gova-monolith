@@ -14,8 +14,15 @@ type User struct {
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
 	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	PasswordHash string `json:"-"`
+	// models.Time, NOT a bare time.Time.
+	//
+	// Every create_model output gets this treatment and the wire contract says
+	// a model struct must never hold a bare time.Time — so this template broke
+	// the contract it ships with, in every generated app. Latent only while
+	// nothing serializes a User wholesale: the first endpoint that returns the
+	// struct emits RFC3339Nano, which Swift's .iso8601 decoder rejects.
+	CreatedAt Time `json:"created_at"`
 }
 
 type UserModel struct {

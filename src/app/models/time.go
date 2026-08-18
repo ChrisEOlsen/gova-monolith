@@ -94,3 +94,34 @@ func (t Time) Value() (driver.Value, error) {
 func (t Time) String() string {
 	return time.Time(t).UTC().Format(time.RFC3339)
 }
+
+// NullTime is Time for a nullable DATETIME column.
+//
+// It exists because the generated models scan nullable columns through a
+// database/sql temporary and then take its address, and sql.NullTime's payload
+// is a bare time.Time — which would put a *time.Time on the struct and marshal
+// as RFC3339Nano, the exact thing Time exists to prevent. Keeping the payload a
+// Time means the null path and the non-null path serialize identically.
+type NullTime struct {
+	Time  Time
+	Valid bool
+}
+
+func (n *NullTime) Scan(src any) error {
+	if src == nil {
+		n.Time, n.Valid = Time{}, false
+		return nil
+	}
+	if err := n.Time.Scan(src); err != nil {
+		return err
+	}
+	n.Valid = true
+	return nil
+}
+
+func (n NullTime) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return n.Time.Value()
+}

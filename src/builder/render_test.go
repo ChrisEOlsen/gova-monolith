@@ -4,6 +4,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -670,5 +671,91 @@ func TestClientIPTemplate_HasATrustedPeerNotion(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("clientip.go.tmpl is missing %q", want)
 		}
+	}
+}
+
+// TestModelTemplate_TimestampFieldIsModelsTime pins the field type that exists
+// to stop a model putting two timestamp formats on one JSON object.
+//
+// Generated models have always given created_at the models.Time treatment
+// (RFC3339, second precision) — but there was no way to DECLARE any other
+// timestamp column, so every author wrote `updated_at:string` and got a Go
+// string carrying SQLite's native "2026-08-15 19:40:07". Confirmed across four
+// models in one project, because it is the generator and not any one model.
+// Invisible in a browser, and fatal to a typed client: a Swift .iso8601 decoder
+// rejects the row. A wire defect only the SECOND client finds.
+func TestModelTemplate_TimestampFieldIsModelsTime(t *testing.T) {
+	out := renderAndParse(t, "model.go.tmpl", newData("widget", []Field{
+		{Name: "updated_at", Type: "timestamp", Nullable: false},
+		{Name: "archived_at", Type: "timestamp", Nullable: true},
+	}))
+	if !strings.Contains(out, "UpdatedAt Time `json:\"updated_at\"`") {
+		t.Errorf("a NOT NULL timestamp must be models.Time:\n%s", out)
+	}
+	if !strings.Contains(out, "ArchivedAt *Time `json:\"archived_at\"`") {
+		t.Errorf("a nullable timestamp must be *models.Time:\n%s", out)
+	}
+	if strings.Contains(out, "UpdatedAt string") || strings.Contains(out, "ArchivedAt *string") {
+		t.Errorf("a timestamp field fell back to string — the defect this type exists to close:\n%s", out)
+	}
+	// The nullable scan path goes through models.NullTime, whose payload is a
+	// Time. sql.NullTime's payload is a bare time.Time and would put a
+	// *time.Time on the struct — RFC3339Nano, the thing models.Time prevents.
+	if !strings.Contains(out, "var archived_atNull NullTime") {
+		t.Errorf("a nullable timestamp must scan through models.NullTime:\n%s", out)
+	}
+	if strings.Contains(out, "sql.NullTime") {
+		t.Errorf("sql.NullTime puts a bare time.Time on the struct:\n%s", out)
+	}
+}
+
+// TestUserModelTemplate_CreatedAtIsModelsTime is §A8: the template broke the
+// wire contract it ships with.
+//
+// CreatedAt was a bare time.Time here while every create_model output correctly
+// used models.Time — and the contract's own words are "never use a bare
+// time.Time in a model struct". Latent only while nothing serializes a User
+// wholesale; the first endpoint returning the struct emits RFC3339Nano.
+func TestUserModelTemplate_CreatedAtIsModelsTime(t *testing.T) {
+	out := renderAndParse(t, "user_model.go.tmpl", newData("user", nil))
+	if !strings.Contains(out, "CreatedAt Time `json:\"created_at\"`") {
+		t.Errorf("User.CreatedAt must be models.Time:\n%s", out)
+	}
+	if strings.Contains(out, "CreatedAt    time.Time") {
+		t.Error("User.CreatedAt is a bare time.Time — RFC3339Nano on the wire")
+	}
+}
+
+// TestValidateFieldTypes_RejectsUnknown keeps a typo from silently becoming a
+// string column.
+//
+// parseFields has no error return and goTypeFor's default is "string", so
+// `updated_at:timestmap` used to generate exactly the defect the timestamp type
+// was added to remove — arriving by typo instead of by necessity.
+func TestValidateFieldTypes_RejectsUnknown(t *testing.T) {
+	if err := validateFieldTypes([]Field{{Name: "updated_at", Type: "timestmap"}}); err == nil {
+		t.Fatal("an unknown field type must be an error, not a silent string")
+	}
+	for _, ok := range []string{"string", "int", "float", "boolean", "password", "timestamp"} {
+		if err := validateFieldTypes([]Field{{Name: "f", Type: ok}}); err != nil {
+			t.Errorf("%s should be accepted: %v", ok, err)
+		}
+	}
+}
+
+// TestAcceptedSQLTypes_TimestampTakesBothSpellings — SQLite has no date type,
+// so DATETIME is a convention and the same column is spelled DATETIME by one
+// author and TEXT by another. Both store identical bytes and both scan into
+// models.Time; refusing one would push the author back to declaring the field a
+// string, which is the defect.
+func TestAcceptedSQLTypes_TimestampTakesBothSpellings(t *testing.T) {
+	got := acceptedSQLTypes("timestamp")
+	for _, want := range []string{"DATETIME", "TEXT"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("timestamp should accept a %s column, got %v", want, got)
+		}
+	}
+	if slices.Contains(acceptedSQLTypes("string"), "DATETIME") {
+		t.Error("a string field must not silently sit on a DATETIME column")
 	}
 }

@@ -89,11 +89,31 @@ func TestJSONError_DerivesCodeFromStatus(t *testing.T) {
 		{http.StatusUnauthorized, "unauthorized"},
 		{http.StatusForbidden, "forbidden"},
 		{http.StatusNotFound, "not_found"},
+		{http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.StatusConflict, "conflict"},
 		{http.StatusUnprocessableEntity, "validation_failed"},
 		{http.StatusTooManyRequests, "rate_limited"},
+		{http.StatusServiceUnavailable, "unavailable"},
 		{http.StatusInternalServerError, "internal"},
-		{http.StatusTeapot, "internal"},
+		{http.StatusBadGateway, "internal"},
+
+		// A MALFORMED REQUEST IS NOT THIS SERVER'S FAULT.
+		//
+		// Both of these used to fall through to `internal`. 400 is the one every
+		// generated handler hits, because jsonError(w, "invalid request body",
+		// 400) is the shortest way to reject a body — so the response said
+		// "your JSON is broken" while the code the client branches on said "we
+		// broke", and a client retrying an `internal` retried forever.
+		{http.StatusBadRequest, "validation_failed"},
+		{http.StatusRequestEntityTooLarge, "validation_failed"},
+
+		// AND A 4xx NOBODY ENUMERATED IS STILL ABOUT THE REQUEST.
+		//
+		// This case is the one that changed shape rather than gaining an entry:
+		// it used to assert "internal", which pinned the defect rather than the
+		// behaviour. Splitting the default by class is what stops the next
+		// unenumerated 4xx from arriving mislabelled.
+		{http.StatusTeapot, "validation_failed"},
 	}
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
@@ -171,6 +191,8 @@ func TestCodeConstants_PinWireContract(t *testing.T) {
 		{CodeConflict, "conflict"},
 		{CodeValidationFailed, "validation_failed"},
 		{CodeRateLimited, "rate_limited"},
+		{CodeMethodNotAllowed, "method_not_allowed"},
+		{CodeUnavailable, "unavailable"},
 		{CodeInternal, "internal"},
 	}
 	for _, tc := range cases {

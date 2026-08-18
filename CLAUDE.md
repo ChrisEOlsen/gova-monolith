@@ -135,10 +135,25 @@ Every JSON response uses one envelope:
   `jsonOK`/`jsonList` normalize as a second guard. A typed client decoding an
   array must never see `null`.
 - **`error` is always a plain string.** `code` and `fields` are additive.
-- **Codes:** `unauthorized`, `forbidden`, `not_found`, `conflict`,
-  `validation_failed`, `rate_limited`, `internal`.
+- **Codes:** `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`,
+  `conflict`, `validation_failed`, `rate_limited`, `unavailable`, `internal`.
+  - `codeForStatus` derives these from the status. Its default is split by
+    class: **any unenumerated 4xx is `validation_failed`**, because a 4xx is by
+    definition something about the request, and only 5xx falls through to
+    `internal`. A single `default: internal` told every caller that their own
+    malformed body was this server's fault — and `jsonError(w, "…", 400)` is the
+    shortest helper, so that was the common case.
 - **Timestamps** are RFC3339, UTC, second precision — via `models.Time`. Never
   use a bare `time.Time` in a model struct.
+  - **Declare a DATETIME column as `timestamp`, never as `string`.**
+    `updated_at:string` generates a Go `string` holding SQLite's native
+    `2026-08-15 19:40:07`, which puts **two timestamp formats on one JSON
+    object** beside `created_at`'s RFC3339. A browser parses both; a typed
+    client's `.iso8601` decoder rejects the row. A nullable timestamp becomes
+    `*models.Time`, scanned through `models.NullTime`.
+  - Field types are `string`, `int`, `float`, `boolean`, `password`,
+    `timestamp`. An unrecognised type is now an error rather than a silent
+    `string`.
 - **Lists are paginated by default:** `?limit=` (1–200, default 50) and
   `?offset=`. Use `jsonList(w, items, Meta{...})`, not `jsonOK`.
 - **All API routes live under `/api/v1/`.**

@@ -147,6 +147,8 @@ var funcMap = template.FuncMap{
 	},
 	"sqlType": func(t string) string {
 		switch t {
+		case "timestamp":
+			return "DATETIME"
 		case "int":
 			return "INTEGER"
 		case "boolean":
@@ -171,6 +173,30 @@ var funcMap = template.FuncMap{
 		return strings.Join(vals, ", ")
 	},
 	// testDecls declares the addressable locals testArgs points at.
+	// hasTimestamp reports whether any field is a timestamp, so a generated
+	// test can import "time" only when it actually needs it.
+	"hasTimestamp": func(fields []Field) bool {
+		for _, f := range fields {
+			if f.Type == "timestamp" {
+				return true
+			}
+		}
+		return false
+	},
+	// testFieldMismatch emits the "did the round trip lose it?" condition for
+	// one field.
+	//
+	// `!=` is right for every scalar and WRONG for a timestamp: time.Time's ==
+	// compares the internal representation — wall clock, monotonic reading and
+	// the *Location pointer — so a value that came back from SQLite through a
+	// different location object compares unequal while naming the same instant.
+	// A generated test that flaked on that would be blamed on the database.
+	"testFieldMismatch": func(f Field, got, want string) string {
+		if f.Type == "timestamp" {
+			return "!time.Time(" + got + ").Equal(time.Time(" + want + "))"
+		}
+		return got + " != " + want
+	},
 	"testDecls": func(fields []Field, indent string) string {
 		lines := []string{}
 		for _, f := range fields {
@@ -224,6 +250,16 @@ func goTypeFor(t string) string {
 	switch t {
 	case "int":
 		return "int64"
+	case "timestamp":
+		// models.Time, unqualified because generated models live in that
+		// package. Declaring a DATETIME column as `string` — which is what
+		// every author had to do before this type existed — puts SQLite's
+		// native "2026-08-15 19:40:07" on the wire beside created_at's
+		// RFC3339, so ONE JSON OBJECT carries two timestamp formats. A browser
+		// parses both and never notices; a typed client with an .iso8601
+		// decoder rejects the row outright. That is the shape worth
+		// remembering: a wire defect only the second client finds.
+		return "Time"
 	case "boolean":
 		return "bool"
 	case "float":
@@ -237,6 +273,11 @@ func nullTypeFor(t string) string {
 	switch t {
 	case "int":
 		return "sql.NullInt64"
+	case "timestamp":
+		// models.NullTime, not sql.NullTime: its payload is a Time, so the
+		// pointer scanAssigns takes is a *Time and the nullable column
+		// serializes exactly like the non-nullable one.
+		return "NullTime"
 	case "boolean":
 		return "sql.NullBool"
 	case "float":
@@ -250,6 +291,8 @@ func nullFieldFor(t string) string {
 	switch t {
 	case "int":
 		return "Int64"
+	case "timestamp":
+		return "Time"
 	case "boolean":
 		return "Bool"
 	case "float":
@@ -263,6 +306,8 @@ func testLiteralFor(t string) string {
 	switch t {
 	case "int":
 		return "int64(1)"
+	case "timestamp":
+		return "Time(time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC))"
 	case "boolean":
 		return "true"
 	case "float":
@@ -494,7 +539,7 @@ func main() {
 	s.AddTool(mcp.NewTool("create_model",
 		mcp.WithDescription("Generate models/Name.go with GetPage/Find/Create/Delete and 5-min cache. Table must exist first (run execute_sql)."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Model name in snake_case")),
-		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
+		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type. Types: string, int, float, boolean, password, timestamp. A DATETIME column MUST be declared timestamp, not string — string puts SQLite's native '2026-08-15 19:40:07' on the wire beside created_at's RFC3339, so one JSON object carries two timestamp formats and a typed client's .iso8601 decoder rejects the row. An unknown type is an error, not a silent string. name:ref:<model> declares a foreign key; name:email|url|uuid|date|datetime declare a string with a format hint.")),
 	), handleCreateModel)
 
 	s.AddTool(mcp.NewTool("create_handler",
@@ -519,13 +564,13 @@ func main() {
 	s.AddTool(mcp.NewTool("scaffold_list",
 		mcp.WithDescription("Generate 4 files: model + JSON list handler + HTML shell + JS module, register GET /api/v1/<plural> in api.json + routes_gen.go, and serve the shell at /<plural> via pages_gen.go. After: add forms with add_js_form."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
-		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
+		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type. Types: string, int, float, boolean, password, timestamp. A DATETIME column MUST be declared timestamp, not string — string puts SQLite's native '2026-08-15 19:40:07' on the wire beside created_at's RFC3339, so one JSON object carries two timestamp formats and a typed client's .iso8601 decoder rejects the row. An unknown type is an error, not a silent string. name:ref:<model> declares a foreign key; name:email|url|uuid|date|datetime declare a string with a format hint.")),
 	), handleScaffoldList)
 
 	s.AddTool(mcp.NewTool("scaffold_resource",
 		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, register all 5 routes in api.json + routes_gen.go, and serve the list page at /<plural> via pages_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
-		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
+		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type. Types: string, int, float, boolean, password, timestamp. A DATETIME column MUST be declared timestamp, not string — string puts SQLite's native '2026-08-15 19:40:07' on the wire beside created_at's RFC3339, so one JSON object carries two timestamp formats and a typed client's .iso8601 decoder rejects the row. An unknown type is an error, not a silent string. name:ref:<model> declares a foreign key; name:email|url|uuid|date|datetime declare a string with a format hint.")),
 	), handleScaffoldResource)
 
 	s.AddTool(mcp.NewTool("scaffold_auth",
@@ -540,7 +585,7 @@ func main() {
 		mcp.WithDescription("Inject a creation form into an existing JS module at the // @inject-forms marker. The form uses api.js for submission. Requires: (1) JS file exists with the marker, (2) a POST handler exists at api_endpoint."),
 		mcp.WithString("page", mcp.Required(), mcp.Description("Target page filename without extension")),
 		mcp.WithString("api_endpoint", mcp.Required(), mcp.Description("API endpoint the form POSTs to")),
-		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type")),
+		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type. Types: string, int, float, boolean, password, timestamp. A DATETIME column MUST be declared timestamp, not string — string puts SQLite's native '2026-08-15 19:40:07' on the wire beside created_at's RFC3339, so one JSON object carries two timestamp formats and a typed client's .iso8601 decoder rejects the row. An unknown type is an error, not a silent string. name:ref:<model> declares a foreign key; name:email|url|uuid|date|datetime declare a string with a format hint.")),
 		mcp.WithString("title", mcp.Description("Optional form section title")),
 		mcp.WithString("submit_label", mcp.Description("Submit button label (default: Submit)")),
 	), handleAddJSForm)

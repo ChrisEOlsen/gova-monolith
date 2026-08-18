@@ -5,6 +5,9 @@ import (
 	{{- if .CRUD}}
 	"database/sql"
 	{{- end}}
+	{{- if hasTimestamp .Fields}}
+	"time"
+	{{- end}}
 
 	"gova/app/cache"
 	"gova/app/db"
@@ -52,7 +55,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 {{range .Fields}}{{if .Nullable}}
 	if items[0].{{toPascal .Name}} == nil {
 		t.Errorf("GetPage: {{.Name}} was not recovered (nil)")
-	} else if *items[0].{{toPascal .Name}} != {{.Name}}TestVal {
+	} else if {{testFieldMismatch . (printf "*items[0].%s" (toPascal .Name)) (printf "%sTestVal" .Name)}} {
 		t.Errorf("GetPage: {{.Name}} got %v, want %v", *items[0].{{toPascal .Name}}, {{.Name}}TestVal)
 	}
 {{end}}{{end}}

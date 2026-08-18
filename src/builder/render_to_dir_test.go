@@ -60,3 +60,32 @@ func TestRenderScaffoldAuthToDir(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderTimestampModelToDir renders a model carrying both a NOT NULL and a
+// nullable timestamp field into $SCRATCH_APP_DIR, for the same reason as the
+// test above: the `timestamp` field type touches seven helpers (goTypeFor,
+// nullTypeFor, nullFieldFor, testLiteralFor, sqlType, hasTimestamp,
+// testFieldMismatch) plus models.NullTime, and every one of them can produce
+// output that parses and does not compile.
+//
+// Same invocation, with -run TestRenderTimestampModelToDir.
+func TestRenderTimestampModelToDir(t *testing.T) {
+	root := os.Getenv("SCRATCH_APP_DIR")
+	if root == "" {
+		t.Skip("SCRATCH_APP_DIR unset — see TestRenderScaffoldAuthToDir for the full invocation")
+	}
+	data := newData("widget", []Field{
+		{Name: "title", Type: "string", Nullable: false},
+		{Name: "updated_at", Type: "timestamp", Nullable: false},
+		{Name: "archived_at", Type: "timestamp", Nullable: true},
+	})
+	data.CRUD = true
+	for _, s := range [][2]string{
+		{"model.go.tmpl", "models/Widget.go"},
+		{"model_test.go.tmpl", "models/Widget_test.go"},
+	} {
+		if err := renderToFile(s[0], filepath.Join(root, s[1]), data); err != nil {
+			t.Fatalf("%s: %v", s[0], err)
+		}
+	}
+}

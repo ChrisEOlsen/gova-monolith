@@ -36,9 +36,32 @@ const (
 	CodeConflict         = "conflict"
 	CodeValidationFailed = "validation_failed"
 	CodeRateLimited      = "rate_limited"
+	CodeMethodNotAllowed = "method_not_allowed"
+	CodeUnavailable      = "unavailable"
 	CodeInternal         = "internal"
 )
 
+// codeForStatus maps an HTTP status onto the machine-readable failure kind a
+// client switches on.
+//
+// THE DEFAULT USED TO BE `internal` FOR EVERYTHING, and that is wrong for a
+// whole class rather than for one value. Every 4xx nobody enumerated — 400
+// first among them — told the caller that their own malformed request was this
+// server's fault. `jsonError(w, "invalid request body", 400)` is the shortest
+// helper and the one a handler naturally reaches for, so the defect reproduced
+// itself in every generated app: the body says one thing, the code the client
+// branches on says another, and the client is sent to the wrong place to look.
+//
+// 413 is the same sentence one status along, and it is the one that bites next:
+// a handler that caps its body with http.MaxBytesReader and answers the
+// overflow with a bare jsonError told an uploader their oversized file was a
+// server bug.
+//
+// So the default is split by class rather than extended by one case at a time.
+// A 4xx is by definition something about the REQUEST, so validation_failed is
+// the honest fallback; anything else is ours. That fails safe in the direction
+// that is true more often, and a status nobody thought of no longer arrives
+// mislabelled.
 func codeForStatus(status int) string {
 	switch status {
 	case http.StatusUnauthorized:
@@ -47,15 +70,21 @@ func codeForStatus(status int) string {
 		return CodeForbidden
 	case http.StatusNotFound:
 		return CodeNotFound
+	case http.StatusMethodNotAllowed:
+		return CodeMethodNotAllowed
 	case http.StatusConflict:
 		return CodeConflict
-	case http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
 		return CodeValidationFailed
 	case http.StatusTooManyRequests:
 		return CodeRateLimited
-	default:
-		return CodeInternal
+	case http.StatusServiceUnavailable:
+		return CodeUnavailable
 	}
+	if status >= 400 && status < 500 {
+		return CodeValidationFailed
+	}
+	return CodeInternal
 }
 
 // normalizeData replaces a nil slice with an empty one.
