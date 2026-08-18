@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -46,7 +47,20 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
 
-		if locked, err := userModel.IsRateLimited(ip); err != nil || locked {
+		// A READ FAILURE IS A 500, NOT A 429.
+		//
+		// `err != nil || locked` collapsed the two into one answer, so a broken
+		// database told every caller "too many attempts, try again in 15
+		// minutes" — a specific, false, and self-limiting-sounding claim that
+		// sends an operator to look at the rate limiter instead of at the
+		// outage. Failing closed is right; lying about why is not.
+		locked, err := userModel.IsRateLimited(ip)
+		if err != nil {
+			log.Printf("handlers: rate-limit read failed for %q: %v", ip, err)
+			jsonError(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+			return
+		}
+		if locked {
 			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
 			return
 		}
@@ -56,16 +70,32 @@ func MobileLoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.Handle
 			// Pay the same bcrypt cost as the wrong-password path below so
 			// response time can't be used to enumerate emails.
 			bcrypt.CompareHashAndPassword(dummyHash, []byte(body.Password))
-			userModel.RecordFailedAttempt(ip)
+			// The limiter's write error is NOT ignorable: a failure here means
+			// the attempt was never counted, so the counter never trips and the
+			// control is silently off. There is nothing useful to tell the
+			// caller — the answer is the same 401 either way — but an operator
+			// must be able to see it.
+			if err := userModel.RecordFailedAttempt(ip); err != nil {
+				log.Printf("handlers: rate limiter failed to record an attempt for %q: %v", ip, err)
+			}
 			jsonError(w, "invalid email or password", http.StatusUnauthorized)
 			return
 		}
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(body.Password)) != nil {
-			userModel.RecordFailedAttempt(ip)
+			// The limiter's write error is NOT ignorable: a failure here means
+			// the attempt was never counted, so the counter never trips and the
+			// control is silently off. There is nothing useful to tell the
+			// caller — the answer is the same 401 either way — but an operator
+			// must be able to see it.
+			if err := userModel.RecordFailedAttempt(ip); err != nil {
+				log.Printf("handlers: rate limiter failed to record an attempt for %q: %v", ip, err)
+			}
 			jsonError(w, "invalid email or password", http.StatusUnauthorized)
 			return
 		}
-		userModel.ClearAttempts(ip)
+		if err := userModel.ClearAttempts(ip); err != nil {
+			log.Printf("handlers: rate limiter failed to clear %q: %v", ip, err)
+		}
 
 		raw := make([]byte, 32)
 		if _, err := rand.Read(raw); err != nil {

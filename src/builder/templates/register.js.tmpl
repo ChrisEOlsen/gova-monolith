@@ -16,7 +16,7 @@ async function init() {
 
     const res = await post('/api/v1/auth/register', { name, email, password });
     if (res.ok) {
-      window.location.href = '/static/pages/home.html';
+      window.location.href = '/';
     } else {
       errorMsg.textContent = res.error ?? 'Registration failed.';
       errorMsg.classList.remove('hidden');

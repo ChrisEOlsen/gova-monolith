@@ -15,7 +15,7 @@ async function init() {
 
     const res = await post('/api/v1/auth/login', { email, password });
     if (res.ok) {
-      window.location.href = '/static/pages/home.html';
+      window.location.href = '/';
     } else {
       errorMsg.textContent = res.error ?? 'Login failed.';
       errorMsg.classList.remove('hidden');

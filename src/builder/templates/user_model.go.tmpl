@@ -113,8 +113,13 @@ func (m *UserModel) IsRateLimited(ip string) (bool, error) {
 // updated_at and datetime('now', ...) are both SQLite's own
 // 'YYYY-MM-DD HH:MM:SS' UTC text, so the comparison is a like-for-like
 // lexicographic one.
-func (m *UserModel) RecordFailedAttempt(ip string) {
-	_, _ = m.writeDB.Exec(`
+// It returns the write error rather than discarding it. A caller that cannot
+// tell the limiter failed to record an attempt cannot tell that the counter
+// will never trip — which silently disables the exact control the caller added
+// it for. Every review that flags "the handler ignores the error" is looking at
+// the wrong layer: with no return value the handler HAS no error to check.
+func (m *UserModel) RecordFailedAttempt(ip string) error {
+	_, err := m.writeDB.Exec(`
 		INSERT INTO rate_limits (ip, attempts, locked_until, updated_at)
 		VALUES (?, 1, NULL, CURRENT_TIMESTAMP)
 		ON CONFLICT(ip) DO UPDATE SET
@@ -126,8 +131,15 @@ func (m *UserModel) RecordFailedAttempt(ip string) {
 				ELSE locked_until END,
 			updated_at = CURRENT_TIMESTAMP
 	`, ip)
+	return err
 }
 
-func (m *UserModel) ClearAttempts(ip string) {
-	_, _ = m.writeDB.Exec("DELETE FROM rate_limits WHERE ip = ?", ip)
+// ClearAttempts forgets a bucket, and reports whether it managed to.
+//
+// A failure here is the harmless direction — the bucket keeps counting — but it
+// is still a limiter that is not behaving as written, and a silent one is
+// indistinguishable from a working one.
+func (m *UserModel) ClearAttempts(ip string) error {
+	_, err := m.writeDB.Exec("DELETE FROM rate_limits WHERE ip = ?", ip)
+	return err
 }

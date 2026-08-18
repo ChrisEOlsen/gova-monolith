@@ -18,10 +18,10 @@ type generatedPage struct {
 	path  string
 	file  string
 	title string
+	auth  bool
 }
 
-var generatedPages = []generatedPage{
-}
+var generatedPages = []generatedPage{}
 
 // pagesRouter mounts the real RegisterPages on a real chi router.
 //
@@ -55,6 +55,12 @@ func TestGeneratedPages_ServeTheirShell(t *testing.T) {
 	r := pagesRouter(t)
 
 	for _, p := range generatedPages {
+		// A guarded page does not serve its shell to a signed-out visitor —
+		// that is the whole point of the flag, and it is asserted directly in
+		// TestGeneratedPages_GuardedPagesRedirectWhenSignedOut below.
+		if p.auth {
+			continue
+		}
 		rec := getPage(t, r, p.path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s: got %d, want 200 (page registered but not served)", p.path, rec.Code)
@@ -72,6 +78,50 @@ func TestGeneratedPages_ServeTheirShell(t *testing.T) {
 		}
 		if p.title != "" && !strings.Contains(rec.Body.String(), "<title>"+p.title+"</title>") {
 			t.Errorf("GET %s: body is missing <title>%s</title> — api.json's title has drifted from the shell", p.path, p.title)
+		}
+	}
+}
+
+// TestGeneratedPages_GuardedPagesRedirectWhenSignedOut is what makes a page's
+// `auth: true` a property rather than a note in a JSON file.
+//
+// The flag used to be written into api.json and rendered nowhere: it read like
+// a security control and enforced nothing. It is now a redirect wrap
+// (middleware.RequirePageAuth), and this test is generated per-page so a
+// project cannot declare a page guarded and ship it open.
+//
+// What it does NOT claim: this is not what protects the page's data. The shell
+// is inert HTML and every datum on it comes from an /api/v1/ endpoint, which is
+// where auth:true is a boundary. Here it removes the flash — without it a
+// signed-out visitor renders the whole page and is bounced only once the JS
+// module loads and calls requireAuth().
+func TestGeneratedPages_GuardedPagesRedirectWhenSignedOut(t *testing.T) {
+	guarded := 0
+	for _, p := range generatedPages {
+		if p.auth {
+			guarded++
+		}
+	}
+	if guarded == 0 {
+		t.Skip("no page declares auth: true")
+	}
+	r := pagesRouter(t)
+
+	for _, p := range generatedPages {
+		if !p.auth {
+			continue
+		}
+		rec := getPage(t, r, p.path)
+		if rec.Code != http.StatusSeeOther {
+			t.Errorf("GET %s signed out: got %d, want 303 — the page declares auth: true", p.path, rec.Code)
+			continue
+		}
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Errorf("GET %s signed out: redirected to %q, want /login", p.path, loc)
+		}
+		// And it must not have served the shell on the way out.
+		if strings.Contains(rec.Body.String(), "<html") {
+			t.Errorf("GET %s signed out: the redirect still carried the page shell", p.path)
 		}
 	}
 }

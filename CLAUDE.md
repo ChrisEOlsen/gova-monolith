@@ -191,12 +191,18 @@ committed source, not a build artifact.
   `pageFile` helper takes a literal base name from the generated table and
   applies `filepath.Base` as a second guard, so nothing a caller sends can reach
   the filesystem.
-- **A page's `auth` flag is declarative only.** It records that the JS module
-  calls `requireAuth()` on load; the shell is *not* wrapped in
-  `middleware.RequireAuth`, because answering a browser navigation with a JSON
-  401 body is worse than letting the module redirect. The page's data is
-  protected on its own `/api/v1/` endpoints, which is where `auth: true`
-  actually enforces anything.
+- **A page's `auth: true` wraps its route in `middleware.RequirePageAuth`** — a
+  303 to `/login`, not the JSON `RequireAuth`, because answering a browser
+  navigation with a JSON 401 body is worse than not guarding it.
+  - **It is a courtesy, not a boundary.** The shell is inert HTML and every
+    datum on it comes from an `/api/v1/` endpoint, so those are where `auth:
+    true` protects anything. What the page wrap buys is removing the flash: a
+    signed-out visitor is bounced by the server on the cookie alone, rather than
+    rendering the whole page and waiting for its JS module's `requireAuth()`.
+  - This flag used to render **nothing at all** — written into `api.json`, read
+    by no generator, and reading exactly like a security control. The generated
+    `pages_gen_test.go` now asserts, per page, that a guarded path redirects
+    when signed out.
 - **Per-endpoint auth is declarative.** An endpoint's `auth: true` makes
   `routes_gen.go` wrap it in `middleware.RequireAuth`. Handlers do not check auth
   inline.

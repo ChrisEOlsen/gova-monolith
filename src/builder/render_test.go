@@ -373,30 +373,58 @@ func TestRenderPages_MountsEachPage(t *testing.T) {
 	parseAsGo(t, "pages_gen.go", out)
 	for _, want := range []string{
 		`r.Get("/login", pageFile("login"))`,
-		`r.Get("/projects", pageFile("projects"))`,
+		// A PAGE'S auth:true MUST RENDER SOMETHING.
+		//
+		// It used to render nothing at all: the flag was written into api.json,
+		// read by nobody, and looked exactly like a security control. The
+		// version of this test that stood here asserted the INERTNESS — "page
+		// routes must not be wrapped in middleware" — and its comment gave a
+		// correct reason for half of it (a browser must not be handed a JSON
+		// 401) and then over-concluded to "no middleware at all". That is why
+		// the defect survived review: the guard read as already-considered.
+		//
+		// RequirePageAuth is the page-shaped answer — a 303 to /login, which is
+		// what the flag reads as and what a browser can act on.
+		`r.With(middleware.RequirePageAuth).Get("/projects", pageFile("projects"))`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing page line:\n  want: %s\n  in:\n%s", want, out)
 		}
 	}
 	// Pages are never mounted under the API prefix, and are never wrapped in
-	// RequireAuth — a browser navigating a page must not receive a JSON 401
-	// body. auth is recorded in api.json and enforced client-side by the JS
-	// module's requireAuth() call; the page's data is protected on its own
-	// /api/v1/ endpoints.
+	// RequireAuth — that one writes a JSON body, which a browser navigating to
+	// a page must not receive.
+	//
+	// The guard here is a courtesy, not a boundary: the shell is inert and every
+	// datum on the page comes from an /api/v1/ endpoint, so THOSE are what carry
+	// auth:true in the endpoint table. What it buys is the removal of the flash
+	// — without it a signed-out visitor renders the whole page and is redirected
+	// only once its JS module has loaded and called requireAuth().
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.Contains(line, "r.Get(") {
+		if !strings.Contains(line, "pageFile(") {
 			continue
 		}
 		if strings.Contains(line, `"/api/`) {
 			t.Errorf("a page must never be mounted under the API prefix: %s", line)
 		}
-		if strings.Contains(line, "middleware") {
-			t.Errorf("page routes must not be wrapped in middleware: %s", line)
+		if strings.Contains(line, "middleware.RequireAuth)") {
+			t.Errorf("a page must not be wrapped in the JSON RequireAuth: %s", line)
 		}
 	}
+}
+
+// TestRenderPages_NoAuthPageMeansNoMiddlewareImport — Go does not compile an
+// unused import, so a project with no guarded page must not get one.
+func TestRenderPages_NoAuthPageMeansNoMiddlewareImport(t *testing.T) {
+	out, err := renderPages(pageManifest(
+		Page{Path: "/login", File: "login", Title: "Log In"},
+	))
+	if err != nil {
+		t.Fatalf("renderPages: %v", err)
+	}
+	parseAsGo(t, "pages_gen.go", out)
 	if strings.Contains(out, `"gova/app/middleware"`) {
-		t.Errorf("pages_gen.go must not import middleware:\n%s", out)
+		t.Errorf("no page is guarded, so the import must be absent:\n%s", out)
 	}
 }
 
@@ -570,17 +598,22 @@ func TestRenderPages_MatchesCommittedManifest(t *testing.T) {
 func TestRenderPagesTest_IsValidGoAndTablesThePages(t *testing.T) {
 	out, err := renderPagesTest(pageManifest(
 		Page{Path: "/login", File: "login", Title: "Sign In"},
-		Page{Path: "/widgets", File: "widgets", Title: "Widgets"},
+		Page{Path: "/widgets", File: "widgets", Title: "Widgets", Auth: true},
 	))
 	if err != nil {
 		t.Fatalf("renderPagesTest: %v", err)
 	}
 	parseAsGo(t, "pages_gen_test.go", out)
 	for _, want := range []string{
-		`{path: "/login", file: "login", title: "Sign In"},`,
-		`{path: "/widgets", file: "widgets", title: "Widgets"},`,
+		`{path: "/login", file: "login", title: "Sign In", auth: false},`,
+		// The table carries auth, so the generated test can assert per page
+		// that a guarded path redirects a signed-out visitor. Without the field
+		// here, api.json could declare a page guarded and nothing generated
+		// would ever check.
+		`{path: "/widgets", file: "widgets", title: "Widgets", auth: true},`,
 		"RegisterPages(r)",
 		"func TestGeneratedPages_ServeTheirShell(t *testing.T)",
+		"func TestGeneratedPages_GuardedPagesRedirectWhenSignedOut(t *testing.T)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in generated page test:\n%s", want, out)

@@ -244,7 +244,11 @@ func renderRoutes(m Manifest) (string, error) {
 		UsesAuth bool
 		Lines    []string
 	}{usesAuth, lines}
-	return renderNamedToString("routes_gen.go.tmpl", data)
+	out, err := renderNamedToString("routes_gen.go.tmpl", data)
+	if err != nil {
+		return "", err
+	}
+	return formatGo("routes_gen.go", out), nil
 }
 
 func regenerateRoutesAt(handlersDir string, m Manifest) error {
@@ -252,7 +256,7 @@ func regenerateRoutesAt(handlersDir string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(handlersDir, "routes_gen.go"), []byte(out), 0644)
+	return writeGoFile(filepath.Join(handlersDir, "routes_gen.go"), out)
 }
 
 // pagesTemplateData is what both page templates render from: the mount lines
@@ -260,15 +264,35 @@ func regenerateRoutesAt(handlersDir string, m Manifest) error {
 type pagesTemplateData struct {
 	Lines []string
 	Pages []Page
+	// AnyAuth drives the conditional middleware import in pages_gen.go.tmpl —
+	// Go will not compile an unused import, so a project with no guarded page
+	// must not have one.
+	AnyAuth bool
 }
 
 func pagesData(m Manifest) pagesTemplateData {
 	m.canonicalize()
 	lines := make([]string, 0, len(m.Pages))
 	for _, p := range m.Pages {
+		// auth:true wraps the page in a REDIRECT guard, not the JSON
+		// RequireAuth: this is a human-facing URL and a browser must not be
+		// handed an error envelope. See middleware.RequirePageAuth for what the
+		// guard is and is not worth. The flag used to render nothing at all.
+		if p.Auth {
+			lines = append(lines, fmt.Sprintf(
+				`r.With(middleware.RequirePageAuth).Get(%q, pageFile(%q))`, p.Path, p.File))
+			continue
+		}
 		lines = append(lines, fmt.Sprintf(`r.Get(%q, pageFile(%q))`, p.Path, p.File))
 	}
-	return pagesTemplateData{Lines: lines, Pages: m.Pages}
+	anyAuth := false
+	for _, p := range m.Pages {
+		if p.Auth {
+			anyAuth = true
+			break
+		}
+	}
+	return pagesTemplateData{Lines: lines, Pages: m.Pages, AnyAuth: anyAuth}
 }
 
 // renderPages emits RegisterPages from the manifest's page table. Each line
@@ -276,7 +300,11 @@ func pagesData(m Manifest) pagesTemplateData {
 // request — to the pageFile helper, which is where the second guard
 // (filepath.Base) lives.
 func renderPages(m Manifest) (string, error) {
-	return renderNamedToString("pages_gen.go.tmpl", pagesData(m))
+	out, err := renderNamedToString("pages_gen.go.tmpl", pagesData(m))
+	if err != nil {
+		return "", err
+	}
+	return formatGo("pages_gen.go", out), nil
 }
 
 // renderPagesTest emits the companion test that mounts RegisterPages on a real
@@ -285,7 +313,11 @@ func renderPages(m Manifest) (string, error) {
 // hand-written test cannot know which pages a project scaffolded, and a page
 // that is registered but unreachable is exactly the defect this closes.
 func renderPagesTest(m Manifest) (string, error) {
-	return renderNamedToString("pages_gen_test.go.tmpl", pagesData(m))
+	out, err := renderNamedToString("pages_gen_test.go.tmpl", pagesData(m))
+	if err != nil {
+		return "", err
+	}
+	return formatGo("pages_gen_test.go", out), nil
 }
 
 func regeneratePagesAt(handlersDir string, m Manifest) error {
@@ -293,14 +325,14 @@ func regeneratePagesAt(handlersDir string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(handlersDir, "pages_gen.go"), []byte(out), 0644); err != nil {
+	if err := writeGoFile(filepath.Join(handlersDir, "pages_gen.go"), out); err != nil {
 		return err
 	}
 	testOut, err := renderPagesTest(m)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(handlersDir, "pages_gen_test.go"), []byte(testOut), 0644)
+	return writeGoFile(filepath.Join(handlersDir, "pages_gen_test.go"), testOut)
 }
 
 // fieldsToModel converts Build 1 Field records (carrying schema-derived

@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"go/format"
 	"log"
 	"os"
 	"path/filepath"
@@ -451,17 +452,55 @@ func updateManifest(models []Model, endpoints []Endpoint, pages []Page) error {
 	return updateManifestAt(manifestFilePath, handlersDirPath, time.Now(), models, endpoints, pages)
 }
 
+// renderToFile renders a template and writes it, running Go output through
+// gofmt on the way.
+//
+// The generator used to emit Go that does not pass gofmt — struct fields
+// unaligned, blank lines where a range produced nothing. Cosmetic on its own,
+// but it means every generated project's first commit carries unformatted files
+// and `gofmt -l` is useless as a check from that moment on: the signal is
+// permanently full of noise nobody put there, so nobody looks at it, so a
+// genuinely mangled hand edit hides in the list.
+//
+// Formatting HERE rather than in each template is the fix, because the
+// alternative is keeping ~20 templates hand-aligned against a `{{range}}` whose
+// output length is not known until it runs. That is not a thing a human can
+// maintain, which is why it drifted.
+//
+// A FORMAT ERROR IS NOT FATAL. If the rendered output does not parse, the
+// unformatted bytes are written anyway and the error surfaces at build time,
+// pointing at the real problem — refusing to write would leave the author with
+// an empty file and a message about formatting.
 func renderToFile(tmplName, outPath string, data TemplateData) error {
-	tmpl, err := getTemplate(tmplName)
+	out, err := renderToString(tmplName, data)
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(outPath)
+	return writeGoFile(outPath, out)
+}
+
+// formatGo runs src through gofmt, or returns it unchanged with a log line if
+// it does not parse.
+//
+// Applied at RENDER time, not only at write time, so that what a caller sees
+// and what lands on disk are the same bytes — the generated-file sync tests
+// compare a render against the committed file, and a formatter that ran on only
+// one side of that comparison would report permanent drift.
+func formatGo(name, src string) string {
+	formatted, err := format.Source([]byte(src))
 	if err != nil {
-		return err
+		log.Printf("gova-builder: %s does not parse as Go, leaving it unformatted: %v", name, err)
+		return src
 	}
-	defer f.Close()
-	return tmpl.Execute(f, data)
+	return string(formatted)
+}
+
+// writeGoFile writes src to path, gofmt-ing it first when path is a .go file.
+func writeGoFile(path, src string) error {
+	if strings.HasSuffix(path, ".go") {
+		src = formatGo(path, src)
+	}
+	return os.WriteFile(path, []byte(src), 0644)
 }
 
 func renderToString(tmplName string, data TemplateData) (string, error) {
@@ -558,7 +597,7 @@ func main() {
 		mcp.WithString("filename", mcp.Required(), mcp.Description("Page filename without extension")),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Page title")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Human-facing URL, e.g. /projects or /settings. Must NOT be under /api/ — that namespace belongs to create_handler.")),
-		mcp.WithBoolean("auth_required", mcp.Description("JS module calls requireAuth() on load. Page shells are not wrapped server-side; protect the data on its /api/v1/ endpoints.")),
+		mcp.WithBoolean("auth_required", mcp.Description("Wraps the page route in middleware.RequirePageAuth: a signed-out visitor gets a 303 to /login instead of the shell. This is a courtesy, NOT a boundary — the shell is inert and every datum on it comes from an /api/v1/ endpoint, so set auth:true on THOSE. What it buys is removing the flash of a page the visitor is about to be redirected out of. The JS module still calls requireAuth() on load.")),
 	), handleCreatePage)
 
 	s.AddTool(mcp.NewTool("scaffold_list",
@@ -669,7 +708,23 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	if err := renderToFile("model_test.go.tmpl", testPath, data); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return mcp.NewToolResultText("Created: " + outPath + "\nCreated: " + testPath), nil
+
+	// api.json is documented as the source of truth for "every model, with
+	// field types and nullability", and create_model used to be the one tool
+	// that wrote a model without saying so. Three calls in one project left the
+	// manifest listing only `user`, with inspect_app reporting no divergence —
+	// a manifest that is silently incomplete is worse than one that is visibly
+	// stale, because nothing goes looking. No runtime effect; a native client
+	// reading the manifest sees a data layer with holes in it.
+	//
+	// Models only: create_model registers no route (create_handler and
+	// create_page do that for their own), so endpoints and pages stay nil.
+	if err := updateManifest([]Model{fieldsToModel(name, toPlural(name), fields)}, nil, nil); err != nil {
+		return errResult("manifest update failed: " + err.Error()), nil
+	}
+
+	return mcp.NewToolResultText("Created: " + outPath + "\nCreated: " + testPath +
+		"\n\nRegistered model " + name + " in api.json."), nil
 }
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
@@ -831,6 +886,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 			"Add forms with add_js_form.\n\n" + runPatternChecks(),
 	), nil
 }
+
 // listPage is the page row scaffold_list and scaffold_resource register for the
 // list shell they emit at static/pages/<plural>.html.
 //

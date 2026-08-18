@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
+{{- if .AnyAuth}}
+
+	"gova/app/middleware"
+{{- end}}
 )
 
 // pageFile serves a page's static HTML shell.

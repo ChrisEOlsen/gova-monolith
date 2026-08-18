@@ -103,6 +103,38 @@ func Auth(next http.Handler) http.Handler {
 }
 
 // RequireAuth returns JSON 401 for unauthenticated API requests.
+// RequirePageAuth is RequireAuth for a HUMAN-FACING URL: no session, redirect
+// to the sign-in page instead of writing a JSON 401 nobody will read.
+//
+// It exists because a page's `auth: true` in api.json used to enforce NOTHING —
+// the flag was written to the manifest, rendered nowhere, and read like a
+// security control. The defensible half of that was the behaviour: wrapping a
+// page shell in RequireAuth would answer a browser with a JSON body, which is
+// worse than not guarding it. What was not defensible was a manifest field that
+// looks like protection and is inert.
+//
+// What this actually buys, and what it does not:
+//
+//   - It does NOT protect data. The shell is inert HTML; every datum on the page
+//     comes from an /api/v1/ endpoint, and THOSE are what must carry auth:true.
+//     A guard here is a courtesy to the user, not a boundary.
+//   - It DOES remove the flash: without it a signed-out visitor gets the full
+//     page, and only once its JS module has loaded and called requireAuth() does
+//     the redirect happen. The server knew from the cookie alone.
+//
+// The redirect target is /login, which scaffold_auth registers. A deployment
+// without it still gets a correct 302 to a 404 — visibly wrong, rather than
+// silently unguarded.
+func RequirePageAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if UserID(r) == 0 {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if UserID(r) == 0 {
