@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -351,6 +352,52 @@ func toPascal(snake string) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// toJSIdent turns an endpoint slug into a valid JavaScript identifier.
+//
+// toPascal splits on "_" only, which is right for a model name — every caller
+// but one feeds it a name already through isSafeIdent. add_js_form is the
+// exception: its input is a URL path, and a path carries separators an
+// identifier cannot. "admin/trainers" came back as "Admin/trainers", so the
+// tool emitted `function setupAdmin/trainersForm(container)` and injected a
+// matching call. That is a syntax error, and because the target is an ES
+// module the parse failure takes the whole module down — loadList and every
+// other export with it, not just the form.
+//
+// So split on anything that is not ASCII alphanumeric, not just "_": "/" and
+// "-" reach here the same way. Segments already valid are untouched, which
+// keeps existing output stable ("client_notes" -> "ClientNotes" as before).
+func toJSIdent(slug string) string {
+	parts := strings.FieldsFunc(slug, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
+	})
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(strings.ToUpper(p[:1]) + p[1:])
+	}
+	out := b.String()
+	// An identifier may not start with a digit; "/api/v1/2fa_codes" would.
+	if out != "" && out[0] >= '0' && out[0] <= '9' {
+		out = "N" + out
+	}
+	return out
+}
+
+// formNameFor derives the generated form function's name from the endpoint the
+// form posts to, falling back to the page name. The versioned prefix is
+// stripped first so the function is named after the resource, not after "v1".
+func formNameFor(apiEndpoint, page string) string {
+	slug := strings.TrimPrefix(apiEndpoint, "/api/v1/")
+	slug = strings.TrimPrefix(slug, "/api/")
+	slug = strings.TrimPrefix(slug, "/")
+	slug = strings.Trim(slug, "/")
+	if name := toJSIdent(slug); name != "" {
+		return name
+	}
+	// The template appends "Form" itself; adding it here too produced
+	// setupClientsFormForm.
+	return toJSIdent(page)
 }
 
 func toPlural(s string) string {
@@ -1125,15 +1172,11 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return errResult("invalid page name"), nil
 	}
 
-	// Strip the versioned API prefix so the generated form function is named
-	// after the resource, not after "v1".
-	endpointSlug := strings.TrimPrefix(apiEndpoint, "/api/v1/")
-	endpointSlug = strings.TrimPrefix(endpointSlug, "/api/")
-	endpointSlug = strings.TrimPrefix(endpointSlug, "/")
-	endpointSlug = strings.Trim(endpointSlug, "/")
-	formName := toPascal(endpointSlug)
+	formName := formNameFor(apiEndpoint, page)
 	if formName == "" {
-		formName = toPascal(page) + "Form"
+		return errResult("cannot derive a form function name from api_endpoint " +
+			strconv.Quote(apiEndpoint) + " or page " + strconv.Quote(page) +
+			": no alphanumeric characters to build an identifier from"), nil
 	}
 
 	fields := parseFields(rawFieldsToStrings(rawFields))
