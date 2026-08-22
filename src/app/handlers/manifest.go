@@ -13,9 +13,24 @@ type Manifest struct {
 	APIVersion  string     `json:"api_version"`
 	Hash        string     `json:"hash"`
 	GeneratedAt string     `json:"generated_at"`
+	Template    Template   `json:"template"`
 	Models      []Model    `json:"models"`
 	Endpoints   []Endpoint `json:"endpoints"`
 	Pages       []Page     `json:"pages"`
+}
+
+// Template mirrors the builder's provenance stamp: which build of the generator
+// wrote this manifest.
+//
+// This struct is decoded from api.json, so ANY field missing here is silently
+// dropped from what /_manifest serves — the file on disk can be complete while
+// the endpoint answers with holes, and nothing reports a mismatch. That already
+// happened once: `pages` was added to api.json and this struct was not updated,
+// so the served manifest omitted every page while the file listed them all.
+// Keep this in step with the builder's Manifest.
+type Template struct {
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Page mirrors the builder's page record — a human-facing HTML route. The app

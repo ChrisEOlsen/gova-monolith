@@ -102,3 +102,62 @@ func TestManifestGET_ServesEnrichedContract(t *testing.T) {
 		}
 	}
 }
+
+// THE SERVED MANIFEST MUST NOT DROP FIELDS THAT api.json CARRIES.
+//
+// Manifest is decoded from the file, so a key the struct does not declare is
+// discarded in silence: api.json can be complete while /_manifest answers with
+// holes, and nothing anywhere reports the difference. That is not hypothetical
+// — `pages` was added to api.json and this struct was not updated, so every
+// registered page was missing from the served contract while the file on disk
+// listed all of them.
+//
+// Rather than asserting the fields we happen to remember, this decodes the
+// REAL committed api.json generically and requires every top-level key to
+// survive the round trip. A field added to the builder's manifest and
+// forgotten here turns it red.
+func TestManifestGET_DropsNoTopLevelField(t *testing.T) {
+	raw, err := os.ReadFile("../api.json")
+	if err != nil {
+		t.Skipf("no committed api.json to check against: %v", err)
+	}
+	var onDisk map[string]any
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("committed api.json is not valid JSON: %v", err)
+	}
+
+	served, err := json.Marshal(loadManifest("../api.json"))
+	if err != nil {
+		t.Fatalf("marshal served manifest: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(served, &out); err != nil {
+		t.Fatalf("served manifest is not valid JSON: %v", err)
+	}
+
+	for key := range onDisk {
+		if _, ok := out[key]; !ok {
+			t.Errorf("api.json has top-level %q but the served manifest drops it — add it to the Manifest struct", key)
+		}
+	}
+}
+
+// The provenance stamp specifically: it is what tells an app which template
+// built it, and it is useless if the endpoint does not carry it.
+func TestManifestGET_CarriesTemplateStamp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.json")
+	body := `{"api_version":"1.0.0","hash":"sha256:abc",
+	          "template":{"version":"2026-01-01.1","fingerprint":"sha256:def"},
+	          "models":[],"endpoints":[],"pages":[]}`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m := loadManifest(path)
+	if m.Template.Version != "2026-01-01.1" {
+		t.Errorf("template version: got %q, want %q", m.Template.Version, "2026-01-01.1")
+	}
+	if m.Template.Fingerprint != "sha256:def" {
+		t.Errorf("template fingerprint: got %q, want %q", m.Template.Fingerprint, "sha256:def")
+	}
+}
