@@ -23,7 +23,10 @@ step "Checking prerequisites"
 command -v docker >/dev/null 2>&1 || fail "docker not found — install Docker Desktop"
 command -v git    >/dev/null 2>&1 || fail "git not found"
 command -v curl   >/dev/null 2>&1 || fail "curl not found"
-ok "docker, git, curl present"
+# openssl mints SESSION_SECRET below. It was not checked here, so a machine
+# without it failed mid-run under `set -e` with no explanation.
+command -v openssl >/dev/null 2>&1 || fail "openssl not found — needed to generate SESSION_SECRET"
+ok "docker, git, curl, openssl present"
 
 command -v stripe >/dev/null 2>&1 \
     && ok "stripe CLI present" \
@@ -59,6 +62,23 @@ CURRENT_APP_NAME="${CURRENT_APP_NAME:-my-gova-app}"
 printf "  App name [%s]: " "$CURRENT_APP_NAME"
 read -r INPUT_APP_NAME </dev/tty
 APP_NAME="${INPUT_APP_NAME:-$CURRENT_APP_NAME}"
+
+# APP_NAME is not just a label: docker-compose.yml uses it as the compose
+# project name (`name: ${APP_NAME:-my-gova-app}`), which is what every container
+# is named after and what CONTAINER_NAME below is built from. Compose only
+# accepts lowercase letters, digits, dash and underscore, so a natural answer
+# like "Task Manager" made `docker compose up` fail several steps later with an
+# error that pointed nowhere near this prompt. Normalise it here instead.
+NORMALIZED_APP_NAME=$(printf '%s' "$APP_NAME" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9_-]\{1,\}/-/g' -e 's/^[^a-z0-9]*//' -e 's/[-_]*$//')
+if [ -z "$NORMALIZED_APP_NAME" ]; then
+    fail "App name must contain at least one letter or digit"
+fi
+if [ "$NORMALIZED_APP_NAME" != "$APP_NAME" ]; then
+    warn "App name normalised for Docker: '$APP_NAME' → '$NORMALIZED_APP_NAME'"
+    APP_NAME="$NORMALIZED_APP_NAME"
+fi
 set_env_var "$ENV_FILE" "APP_NAME" "$APP_NAME"
 ok "APP_NAME set to: $APP_NAME"
 
@@ -77,14 +97,23 @@ ok "MCP container: $CONTAINER_NAME"
 step "Configuring ~/.claude/settings.json"
 
 python3 - <<'PYEOF'
-import json, os
+import json, os, sys
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
-try:
-    with open(settings_path) as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    settings = {}
+settings = {}
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except json.JSONDecodeError as e:
+        # Abort rather than overwrite -- see the same guard in the MCP step.
+        # Falling back to {} here would have replaced the user's global Claude
+        # settings (permissions, hooks, env, model) with an empty object because
+        # the file had a typo in it.
+        sys.exit(
+            f"  x ~/.claude/settings.json is not valid JSON ({e}).\n"
+            f"    Refusing to overwrite it - fix or move the file, then re-run."
+        )
 
 if "mcpServers" in settings:
     del settings["mcpServers"]
@@ -106,31 +135,55 @@ PYEOF
 
 ok "~/.claude/settings.json updated"
 
-step "Registering Stripe MCP"
+step "Registering remote MCP servers"
 
 python3 - <<'PYEOF'
-import json, os
+import json, os, sys
+
+# The remote MCP servers a GOVA build expects to be able to reach.
+#   stripe   - /build Step 5b uses it when SEED.md checks Payments.
+#   context7 - /build Step 5 tells every subagent to look up external API docs
+#              with it. It used to be named there and registered nowhere, so an
+#              agent that followed the instruction reached for a tool that did
+#              not exist.
+# These go in ~/.claude.json (user scope). The project's own .mcp.json is
+# generated further down for gova-builder and is rewritten per project.
+REMOTE_SERVERS = {
+    "stripe": {"type": "http", "url": "https://mcp.stripe.com/"},
+    "context7": {"type": "http", "url": "https://mcp.context7.com/mcp"},
+}
 
 claude_json_path = os.path.expanduser("~/.claude.json")
-try:
-    with open(claude_json_path) as f:
-        config = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    config = {}
+config = {}
+if os.path.exists(claude_json_path):
+    try:
+        with open(claude_json_path) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        # ABORT RATHER THAN OVERWRITE. This used to fall back to config = {} and
+        # then write that back out, which turned "your file has a typo in it"
+        # into "your entire Claude configuration is gone" - projects, history,
+        # every other MCP server. A file we cannot parse is a file we must not
+        # replace.
+        sys.exit(
+            f"  x ~/.claude.json is not valid JSON ({e}).\n"
+            f"    Refusing to overwrite it - fix or move the file, then re-run."
+        )
 
 config.setdefault("mcpServers", {})
-if "stripe" not in config["mcpServers"]:
-    config["mcpServers"]["stripe"] = {"type": "http", "url": "https://mcp.stripe.com/"}
-    print("  + stripe MCP registered in ~/.claude.json")
-else:
-    print("  - stripe MCP already registered")
+for name, spec in REMOTE_SERVERS.items():
+    if name not in config["mcpServers"]:
+        config["mcpServers"][name] = spec
+        print(f"  + {name} MCP registered in ~/.claude.json")
+    else:
+        print(f"  - {name} MCP already registered")
 
 with open(claude_json_path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
 PYEOF
 
-ok "Stripe MCP registered"
+ok "Remote MCP servers registered"
 
 step "Building Docker image"
 

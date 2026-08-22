@@ -45,6 +45,15 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 - Think: What data do I need?
 - Action: Use `execute_sql` to create the table.
 - Rule: ALWAYS use `id INTEGER PRIMARY KEY` (no AUTOINCREMENT).
+- Rule: ALWAYS include `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`.
+  **Both columns are now required and checked at scaffold time.** Every
+  generated model hard-codes them — `ID`/`CreatedAt` in the struct, `id` and
+  `created_at` in `AllowedColumns`, and `SELECT id, ..., created_at` in
+  `GetPage` — and list endpoints default to `ORDER BY created_at DESC`. A table
+  missing either used to scaffold cleanly and fail on the first list request,
+  and the generated model test could not catch it because that test builds its
+  own table from a literal that has both. `create_model` and every `scaffold_*`
+  now refuse the table instead.
 - Example:
   ```sql
   CREATE TABLE projects (
@@ -128,7 +137,22 @@ Scaffold tools generate tests alongside code — see the Tool Cheat Sheet above 
    - **Sessions:** Signed HMAC-SHA256 cookie. `middleware.SetSession(w, userID, 24*time.Hour)` on login. `middleware.ClearSession(w)` on logout.
    - **Auth (API):** `jsonError(w, "unauthorized", 401)` for unauthenticated requests — never redirect from an API handler.
    - **Auth (Pages):** Call `requireAuth()` at the top of protected JS modules.
-   - **Rate Limiting:** Login uses `rate_limits` table (5 attempts / 15 min per IP).
+   - **Rate Limiting:** `rate_limits` table, 5 attempts / 15 min, keyed per
+     action **and** per IP. Each endpoint has its own bucket in
+     `handlers/auth_buckets.go` (`login:`, `login_token:`, `register:`) — a
+     shared key would let a success on one endpoint clear another's failures.
+     The IP comes from `handlers/clientip.go`, which only trusts forwarding
+     headers from a trusted proxy. Registration counts **every** attempt, not
+     just failures, because account creation is the thing being limited.
+   - **Passwords:** bcrypt, and at most 72 bytes — bcrypt *rejects* longer input
+     rather than truncating it, so the limit is validated at the boundary and
+     answered as a 400, never a 500.
+   - **CSP:** `middleware.Security` sends `script-src 'self'` with
+     `object-src`/`base-uri` set to `'none'`. This is the backstop behind rule
+     3 above: an injected script does not execute even if it reaches the DOM.
+     Every page loads JS as an external module and Tailwind compiles to a
+     linked stylesheet, so nothing needs `'unsafe-inline'`. Widen a single
+     directive if an app needs an outside origin; do not drop the header.
 
 ---
 

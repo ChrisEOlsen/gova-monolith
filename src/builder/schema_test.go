@@ -149,7 +149,8 @@ func TestApplySchema_UnsafeTableNameRejected(t *testing.T) {
 func TestApplySchema_BooleanNotNullColumn(t *testing.T) {
 	dsn := testDSN(t, `CREATE TABLE flags (
 		id INTEGER PRIMARY KEY,
-		active BOOLEAN NOT NULL
+		active BOOLEAN NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
@@ -165,7 +166,8 @@ func TestApplySchema_BooleanNotNullColumn(t *testing.T) {
 func TestApplySchema_BooleanNullableColumn(t *testing.T) {
 	dsn := testDSN(t, `CREATE TABLE flags (
 		id INTEGER PRIMARY KEY,
-		active BOOLEAN
+		active BOOLEAN,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
@@ -181,7 +183,8 @@ func TestApplySchema_BooleanNullableColumn(t *testing.T) {
 func TestApplySchema_IntegerBooleanColumn(t *testing.T) {
 	dsn := testDSN(t, `CREATE TABLE flags (
 		id INTEGER PRIMARY KEY,
-		active INTEGER NOT NULL
+		active INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
@@ -197,7 +200,8 @@ func TestApplySchema_IntegerBooleanColumn(t *testing.T) {
 func TestApplySchema_BooleanFieldAgainstTextColumnFails(t *testing.T) {
 	dsn := testDSN(t, `CREATE TABLE flags (
 		id INTEGER PRIMARY KEY,
-		active TEXT NOT NULL
+		active TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
@@ -207,5 +211,90 @@ func TestApplySchema_BooleanFieldAgainstTextColumnFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "active") {
 		t.Errorf("error %q missing field name", err)
+	}
+}
+
+// A table missing the columns every generated model selects must fail the tool
+// call, not the request that eventually runs the query.
+//
+// These two were the gap: applySchemaAt checked every field the caller
+// DECLARED and nothing it did not. model.go.tmpl selects "id" and "created_at"
+// regardless, so a table without them scaffolded clean and broke on the first
+// list request — and the generated model test could not see it, because
+// model_test.go.tmpl builds its own table from a literal that has created_at in
+// it. Green tests, broken endpoint.
+func TestApplySchema_RequiresImplicitColumns(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  string
+		wantSub string
+	}{
+		{
+			name: "no created_at",
+			schema: `CREATE TABLE notes (
+				id INTEGER PRIMARY KEY,
+				body TEXT NOT NULL
+			)`,
+			wantSub: `has no "created_at" column`,
+		},
+		{
+			name: "no id",
+			schema: `CREATE TABLE notes (
+				body TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			wantSub: `has no "id" column`,
+		},
+		{
+			name: "id is not an integer",
+			schema: `CREATE TABLE notes (
+				id TEXT PRIMARY KEY,
+				body TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			wantSub: `column "id" is TEXT`,
+		},
+		{
+			name: "created_at is not a timestamp",
+			schema: `CREATE TABLE notes (
+				id INTEGER PRIMARY KEY,
+				body TEXT NOT NULL,
+				created_at INTEGER
+			)`,
+			wantSub: `column "created_at" is INTEGER`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dsn := testDSN(t, c.schema)
+			_, err := applySchemaAt(dsn, "notes", []Field{{Name: "body", Type: "string"}})
+			if err == nil {
+				t.Fatal("expected an error, got none — the model would select a column that does not exist")
+			}
+			if !strings.Contains(err.Error(), c.wantSub) {
+				t.Errorf("error %q does not mention %q", err.Error(), c.wantSub)
+			}
+		})
+	}
+}
+
+// The happy path still passes: a table shaped like the Golden Recipe's example
+// is accepted, so the new check cannot be satisfied only by the fixtures above.
+func TestApplySchema_GoldenRecipeShapeAccepted(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE projects (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		status TEXT DEFAULT 'active',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	got, err := applySchemaAt(dsn, "projects", []Field{
+		{Name: "name", Type: "string"},
+		{Name: "status", Type: "string"},
+	})
+	if err != nil {
+		t.Fatalf("the CREATE TABLE from CLAUDE.md's Golden Recipe must scaffold: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d fields, want 2", len(got))
 	}
 }

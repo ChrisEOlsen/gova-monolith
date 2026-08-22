@@ -6,9 +6,38 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 	"gova/app/cache"
 )
+
+// ErrDuplicateEmail is Create's answer to the users.email UNIQUE constraint.
+//
+// The classification belongs HERE, not in the handler. The handler used to ask
+// `strings.Contains(err.Error(), "UNIQUE")`, which is wrong in both directions:
+// it reports "that email is taken" for a unique violation on ANY column, and it
+// depends on the driver's English error text staying the same forever. A NOT
+// NULL column added later, or any other constraint, came back to the user as a
+// duplicate-email message about a field they had filled in correctly.
+//
+// Returning a sentinel from the layer that owns the query also keeps the
+// handler free of a sqlite3 import, which is the same reason handlers use model
+// methods instead of raw SQL.
+var ErrDuplicateEmail = errors.New("an account with that email already exists")
+
+// ErrPasswordTooLong mirrors bcrypt's own 72-byte input limit.
+//
+// bcrypt.GenerateFromPassword REJECTS a longer password rather than truncating
+// it (x/crypto returns ErrPasswordTooLong), so a user who chose a long
+// passphrase — the strongest thing they could have done — used to get a generic
+// 500 that retrying never fixed. Naming it here lets the handler answer 400
+// with something actionable.
+var ErrPasswordTooLong = errors.New("password must be at most 72 bytes")
+
+// maxPasswordBytes is bcrypt's hard input limit, in bytes rather than runes:
+// the limit is on the byte length, so a passphrase of multi-byte characters
+// reaches it sooner than its character count suggests.
+const maxPasswordBytes = 72
 
 type User struct {
 	ID           int64     `json:"id"`
@@ -37,6 +66,9 @@ func NewUserModel(readDB, writeDB *sql.DB, c *cache.Cache) *UserModel {
 
 func (m *UserModel) Create(name, email, password string) (int64, error) {
 	email = strings.ToLower(email)
+	if len(password) > maxPasswordBytes {
+		return 0, ErrPasswordTooLong
+	}
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return 0, err
@@ -46,9 +78,19 @@ func (m *UserModel) Create(name, email, password string) (int64, error) {
 		name, email, string(hashed),
 	)
 	if err != nil {
-		return 0, err
+		return 0, classifyWriteError(err)
 	}
 	return res.LastInsertId()
+}
+
+// classifyWriteError turns a driver error into a sentinel the handler can
+// branch on, by CODE rather than by message text.
+func classifyWriteError(err error) error {
+	var sqliteErr sqlite3.Error
+	if errors.As(err, &sqliteErr) && sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique {
+		return ErrDuplicateEmail
+	}
+	return err
 }
 
 func (m *UserModel) FindByEmail(email string) (*User, error) {

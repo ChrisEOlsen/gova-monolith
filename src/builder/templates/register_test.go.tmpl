@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"gova/app/cache"
@@ -55,5 +57,101 @@ func TestRegisterPOST_DuplicateEmailRejected(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+// A long passphrase must be REFUSED CLEARLY, not turned into a 500.
+//
+// bcrypt.GenerateFromPassword returns an error above 72 bytes rather than
+// truncating, so this used to fall through to "Registration failed. Please try
+// again." — advice that could never work, given to the user who did the
+// strongest thing available to them.
+func TestRegisterPOST_TooLongPasswordIsAValidationError(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+
+	long := strings.Repeat("a", 73)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", registerBody("Ada", "ada@example.com", long))
+	rec := httptest.NewRecorder()
+	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("73-byte password: got %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var env struct {
+		OK   bool   `json:"ok"`
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body is not an envelope: %v", err)
+	}
+	if env.OK || env.Code != "validation_failed" {
+		t.Errorf("got ok=%v code=%q, want ok=false code=validation_failed", env.OK, env.Code)
+	}
+
+	// Exactly 72 bytes is bcrypt's limit, not one past it, and must succeed.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", registerBody("Bea", "bea@example.com", strings.Repeat("a", 72)))
+	RegisterPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("72-byte password: got %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Registration is metered per IP.
+//
+// It is the one unauthenticated write in the scaffold set, and its 409 answers
+// "does this address already have an account?" — the exact question login's
+// dummyHash exists to make expensive. Unmetered, that question cost one request.
+func TestRegisterPOST_IsRateLimited(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	handler := RegisterPOST(testDB.Read, testDB.Write, appCache)
+
+	// The bucket locks at 5 attempts inside the window. Every attempt counts,
+	// successful ones included — that is the point, since creating accounts is
+	// the thing being limited.
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
+			registerBody("User", fmt.Sprintf("user%d@example.com", i), "correct-horse-battery-staple"))
+		req.RemoteAddr = "203.0.113.9:5555"
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d: got %d, want 200, body: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register",
+		registerBody("User", "user6@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "203.0.113.9:5555"
+	handler(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th attempt: got %d, want %d, body: %s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+}
+
+// The registration bucket is namespaced away from both login buckets.
+//
+// Sharing a key with login would mean a successful login's ClearAttempts wiped
+// the registration counter — the same bypass auth_buckets.go was written to
+// close, arriving through a third endpoint.
+func TestRegisterBucket_IsNamespaced(t *testing.T) {
+	ip := "198.51.100.7"
+	keys := map[string]string{
+		"register":    registerBucket(ip),
+		"login":       loginBucket(ip),
+		"login_token": loginTokenBucket(ip),
+	}
+	seen := map[string]string{}
+	for name, key := range keys {
+		if key == ip {
+			t.Errorf("%s bucket is a bare IP (%q) — it would share a row with every other action", name, key)
+		}
+		if other, dup := seen[key]; dup {
+			t.Errorf("%s and %s produce the same key %q", name, other, key)
+		}
+		seen[key] = name
 	}
 }

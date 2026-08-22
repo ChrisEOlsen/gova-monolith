@@ -134,6 +134,53 @@ func validateFieldTypes(fields []Field) error {
 	return nil
 }
 
+// requireImplicitColumns checks the two columns every generated model uses
+// without the caller ever declaring them.
+//
+// model.go.tmpl hard-codes both: `ID int64` and `CreatedAt Time` in the struct,
+// "id" and "created_at" in AllowedColumns, and `SELECT id, ..., created_at` in
+// GetPage. Nothing asked for them, so nothing checked for them — applySchemaAt
+// validated only the fields the caller named.
+//
+// A table without created_at therefore scaffolded CLEANLY and failed at
+// runtime with "no such column: created_at" on the first list request. The
+// generated test could not catch it either, because model_test.go.tmpl builds
+// its own table from a literal that includes created_at: the test passed
+// against a schema the app does not use. A green suite plus a broken endpoint
+// is the worst possible pairing, so this moves the failure to the tool call
+// where the diff is still in front of you.
+//
+// orderByClause's default is "ORDER BY created_at DESC", so the column is load
+// bearing for every list endpoint, not only for the JSON field.
+func requireImplicitColumns(table string, cols []column) error {
+	byName := make(map[string]column, len(cols))
+	for _, c := range cols {
+		byName[c.Name] = c
+	}
+
+	id, ok := byName["id"]
+	if !ok {
+		return fmt.Errorf("table %q has no \"id\" column — every generated model selects it; "+
+			"declare it as `id INTEGER PRIMARY KEY`", table)
+	}
+	if id.SQLType != "INTEGER" {
+		return fmt.Errorf("table %q column \"id\" is %s but generated models scan it into an int64 — "+
+			"declare it as `id INTEGER PRIMARY KEY`", table, id.SQLType)
+	}
+
+	createdAt, ok := byName["created_at"]
+	if !ok {
+		return fmt.Errorf("table %q has no \"created_at\" column — every generated model selects it and "+
+			"lists default to `ORDER BY created_at DESC`; "+
+			"declare it as `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`", table)
+	}
+	if !slices.Contains(acceptedSQLTypes("timestamp"), createdAt.SQLType) {
+		return fmt.Errorf("table %q column \"created_at\" is %s but generated models scan it into models.Time — "+
+			"declare it as `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`", table, createdAt.SQLType)
+	}
+	return nil
+}
+
 // applySchemaAt validates declared fields against the real table and fills in
 // Nullable from it.
 //
@@ -147,6 +194,10 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 	}
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("table %q does not exist — run execute_sql to create it before scaffolding", table)
+	}
+
+	if err := requireImplicitColumns(table, cols); err != nil {
+		return nil, err
 	}
 
 	if err := validateFieldTypes(fields); err != nil {

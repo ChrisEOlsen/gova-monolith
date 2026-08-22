@@ -3,6 +3,8 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -31,14 +33,50 @@ func RegisterPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFu
 			jsonError(w, "Name, email and password (min 8 chars) are required.", http.StatusBadRequest)
 			return
 		}
+		// bcrypt REFUSES an input over 72 bytes rather than truncating it, so
+		// without this the strongest thing a user can do — pick a long
+		// passphrase — produced a 500 that retrying never fixed.
+		if len(password) > 72 {
+			jsonError(w, "Password must be at most 72 bytes.", http.StatusBadRequest)
+			return
+		}
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
+
+		// Registration is an unauthenticated write that also reveals, by its
+		// 409, whether an address already has an account. See registerBucket in
+		// auth_buckets.go for why it is metered rather than made vague.
+		ip := registerBucket(clientIP(r))
+		locked, err := userModel.IsRateLimited(ip)
+		if err != nil {
+			log.Printf("handlers: rate-limit read failed for %q: %v", ip, err)
+			jsonError(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+			return
+		}
+		if locked {
+			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
+			return
+		}
+		// Counted BEFORE the outcome is known, so a successful signup costs the
+		// same as a rejected one. Counting only failures would leave account
+		// creation itself unmetered, and would make the 409 the cheap answer.
+		if err := userModel.RecordFailedAttempt(ip); err != nil {
+			log.Printf("handlers: rate limiter failed to record a registration attempt for %q: %v", ip, err)
+		}
+
 		id, err := userModel.Create(name, email, password)
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			// By sentinel, not by matching the driver's error text. See
+			// models.ErrDuplicateEmail.
+			if errors.Is(err, models.ErrDuplicateEmail) {
 				jsonError(w, "An account with that email already exists.", http.StatusConflict)
 				return
 			}
+			if errors.Is(err, models.ErrPasswordTooLong) {
+				jsonError(w, "Password must be at most 72 bytes.", http.StatusBadRequest)
+				return
+			}
+			log.Printf("handlers: registration failed for %q: %v", email, err)
 			jsonError(w, "Registration failed. Please try again.", http.StatusInternalServerError)
 			return
 		}

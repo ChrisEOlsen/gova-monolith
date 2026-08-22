@@ -89,10 +89,9 @@ Subagents must confirm at the start of each task:
   - **Interaction states:** visible hover, focus, active, and disabled states on everything interactive. Focus rings stay — style them, don't remove them.
   - **Empty, loading, and error states are designed, not blank.** A list with no rows shows something intentional.
   - Tailwind utilities plus CSS transitions cover all of this. No framework, no CDN, no JS animation library (Critical Constraint 4).
-- For external API documentation, use the `context7` MCP server **if it is registered**
-  (check `/mcp`). `install-claude.sh` registers `gova-builder` and `stripe` only, so on a
-  default setup it is not there — fall back to `WebSearch`/`WebFetch` rather than assuming
-  a tool that does not exist.
+- Use the `context7` MCP server for external API documentation. `install-claude.sh`
+  registers it alongside `stripe`. If `/mcp` does not list it, fall back to
+  `WebSearch`/`WebFetch` rather than stopping.
 - Do not add manual cache calls to model methods — caching is automatic
 - JS safety: NEVER use `element.innerHTML = userValue` (XSS). ALWAYS use `element.textContent` for user-supplied text. ALWAYS use `createElement` for structured HTML.
 
