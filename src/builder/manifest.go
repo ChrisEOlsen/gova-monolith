@@ -21,9 +21,21 @@ type Manifest struct {
 	APIVersion  string     `json:"api_version"`
 	Hash        string     `json:"hash"`
 	GeneratedAt string     `json:"generated_at"`
+	Template    Template   `json:"template"`
 	Models      []Model    `json:"models"`
 	Endpoints   []Endpoint `json:"endpoints"`
 	Pages       []Page     `json:"pages"`
+}
+
+// Template records which build of the generator wrote this manifest.
+//
+// It is PROVENANCE, not surface, so it is deliberately outside manifestHash:
+// bumping the template must not look like an API change to a client watching
+// that hash. See version.go for why an app needs to be able to answer this at
+// all.
+type Template struct {
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Page is a human-facing HTML route: a URL a person types or clicks, serving a
@@ -194,6 +206,9 @@ func writeManifestAt(path string, m *Manifest, now time.Time) error {
 		m.APIVersion = "1.0.0"
 	}
 	m.canonicalize()
+	// Stamped on every write, so the record follows the surface it describes
+	// rather than being set once at scaffold time and drifting.
+	m.Template = Template{Version: templateVersion(), Fingerprint: templateFingerprint()}
 	m.GeneratedAt = now.UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

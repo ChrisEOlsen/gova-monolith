@@ -1,7 +1,11 @@
 {
   "api_version": "1.0.0",
   "hash": "sha256:3c45ccf02f770d8e1bf90117ffa805d414e500ab8d2d8add1e227e3e63467054",
-  "generated_at": "2026-07-23T00:00:00Z",
+  "generated_at": "2026-08-22T23:50:05Z",
+  "template": {
+    "version": "2026-08-22.1",
+    "fingerprint": "sha256:0663822677091a40e98930ddf4b012698dc1f004e0e4d6c4c58c65dccb5000a3"
+  },
   "models": [],
   "endpoints": [],
   "pages": []

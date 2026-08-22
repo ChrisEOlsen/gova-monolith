@@ -169,8 +169,11 @@ const apiPathPrefix = "/api/"
 // They exist because "every JSON response uses one envelope" was not true at
 // the two places a client is most likely to land — a mistyped path and a wrong
 // verb. chi's built-in fallbacks write plain text ("404 page not found"), so a
-// caller that had just been promised {ok, error, code} got text/plain, and
-// api.js's res.json() threw on it. The CodeNotFound and CodeMethodNotAllowed
+// caller that had just been promised {ok, error, code} got text/plain. api.js
+// no longer throws on that — every one of its functions now synthesizes an
+// envelope when the body will not parse — but a synthesized {code: "internal"}
+// is a guess, and this is the server saying what actually happened.
+// The CodeNotFound and CodeMethodNotAllowed
 // constants above were unreachable through routing at all: only a handler
 // passing those statuses by hand could ever produce them, which is the reverse
 // of how a client encounters them.

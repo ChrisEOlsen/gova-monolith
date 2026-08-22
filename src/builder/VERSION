@@ -1,0 +1,13 @@
+# gova-monolith template version.
+#
+# BUMP THIS whenever anything under src/builder/ changes — generator or
+# templates. It is the only thing that lets a derived app say which version of
+# the template it was built from, because an app vendors a COPY of src/builder
+# and that copy has no link back to this repo afterwards.
+#
+# Format: YYYY-MM-DD.N — the date of the change and a counter within that day.
+# It is compared as an opaque string, never parsed for ordering, so any scheme
+# that a human can eyeball works; this one sorts naturally as a bonus.
+#
+# The first non-comment, non-empty line below is the version.
+2026-08-22.1

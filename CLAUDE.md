@@ -252,6 +252,20 @@ committed source, not a build artifact.
 - **Per-endpoint auth is declarative.** An endpoint's `auth: true` makes
   `routes_gen.go` wrap it in `middleware.RequireAuth`. Handlers do not check auth
   inline.
+- **`api.json` records which template built it.** A `template` block carries the
+  generator's `version` (from `src/builder/VERSION`) and a `fingerprint` hashing
+  every embedded template. It is **provenance, not surface**, so it is excluded
+  from the manifest hash — bumping the template must not read as an API change.
+  - Why it exists: an app **vendors a copy** of `src/builder` and is a fork from
+    that moment. Fixing a defect here reaches no existing app, and nothing used
+    to say so — one app carried three already-fixed defects for weeks because
+    the only symptom was hitting them by hand.
+  - `inspect_app` compares the stamp against the **running** builder and flags
+    three cases: no stamp at all, a version mismatch (usually `src/builder` was
+    synced but the mcp image was never rebuilt — the stale-binary trap), and a
+    fingerprint mismatch (templates edited without bumping `VERSION`).
+  - **Bump `src/builder/VERSION` whenever anything under `src/builder/` changes.**
+    Nothing enforces it; the fingerprint is what catches you if you forget.
 - **Served at `GET /api/v1/_manifest`.** `GET /api/v1/_version` also reports a
   `manifest_hash` so a client or CI can detect any surface change — pages are in
   the hash, so adding or moving one is visible there too.

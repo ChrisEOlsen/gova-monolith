@@ -39,7 +39,7 @@ package handlers
 // ─── why this is not two lines inside the handlers ───────────────────────────
 //
 // handlers/auth.go and handlers/mobile_auth.go are scaffold_auth output, and
-// every scaffold writes with os.Create — a re-run TRUNCATES them, along with
+// every scaffold writes with os.WriteFile — a re-run TRUNCATES them, along with
 // both their _test.go files. A guard living inside the file it guards cannot
 // survive the event it guards against. Keeping the keys here, with the test in
 // handlers/auth_buckets_test.go, means the decision and its proof are in files

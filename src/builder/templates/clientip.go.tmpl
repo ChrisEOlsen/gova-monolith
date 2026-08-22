@@ -26,10 +26,18 @@ import (
 //     header like any other: a caller that can reach the origin sets it to
 //     whatever it likes and gets a FRESH five-attempt bucket on every request,
 //     which is unlimited password guessing with the limiter still reporting
-//     itself as working. Nothing in the code stopped that — the only thing
-//     stopping it was that docker-compose.yml publishes no port for `app` and
-//     binds the proxy to 127.0.0.1. A guarantee that lives in a compose file is
-//     not a guarantee the code has.
+//     itself as working. Nothing in the code stopped that, and nothing outside
+//     it did either — docker-compose.yml publishes `app` as
+//     "${APP_PORT}:${APP_PORT}", which Docker binds to 0.0.0.0. So the origin
+//     is reachable on every interface of the host, and anyone who can open a
+//     socket to that port could rename themselves at will.
+//
+//     Cloudflare's edge OVERWRITES CF-Connecting-IP, so a request that actually
+//     travelled through the tunnel carried a truthful value. That covers the
+//     public path and only the public path: it says nothing about the host's
+//     own network, and nothing about a deployment whose port is forwarded. A
+//     control that holds only for traffic arriving the way you expected is not
+//     a control.
 //
 //  2. WITHOUT THE HEADER, EVERY CALLER SHARED ONE BUCKET. Behind a reverse
 //     proxy, RemoteAddr is the proxy's container address for every request on
@@ -62,11 +70,24 @@ import (
 
 // defaultTrustedProxyCIDRs is "the container network and loopback".
 //
-// It is the default deployment's real shape written down: `app` publishes no
-// host port (docker-compose.yml), so the only peers that can open a socket to
-// it are on the Docker bridge. A public address in RemoteAddr therefore means
-// something changed, and the safe reading of that is "this is a direct caller,
-// trust nothing it says".
+// It is where this app's OWN ingress sits: the tunnel or reverse proxy runs as
+// a sibling container on the Docker bridge, so a request relayed by it arrives
+// from a private address. That is the whole claim being made here — these are
+// the peers whose forwarding headers we are willing to read.
+//
+// It is NOT a claim that nothing else can reach the origin. docker-compose.yml
+// publishes the app's port on 0.0.0.0, so a caller on the host's network can
+// connect directly; such a caller arrives from an address outside this set,
+// is treated as a direct caller, and has its headers ignored. That is the
+// intended outcome, and it is the reason the trusted set has to be written
+// down in code rather than inferred from the deployment.
+//
+// One consequence worth knowing: a caller on the SAME Docker network, or on a
+// private LAN whose addresses fall in these ranges, IS inside the trusted set
+// and its forwarding headers ARE honoured. That is unavoidable for any
+// address-based scheme — it is why the set is overridable below, and why a
+// deployment that exposes the port to an untrusted private network should
+// narrow it to the ingress address alone.
 //
 // Overridable with TRUSTED_PROXY_CIDRS (comma-separated) for a deployment whose
 // ingress sits somewhere else. Setting it to an empty-but-present value is the
