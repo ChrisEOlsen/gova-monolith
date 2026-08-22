@@ -89,7 +89,10 @@ Subagents must confirm at the start of each task:
   - **Interaction states:** visible hover, focus, active, and disabled states on everything interactive. Focus rings stay — style them, don't remove them.
   - **Empty, loading, and error states are designed, not blank.** A list with no rows shows something intentional.
   - Tailwind utilities plus CSS transitions cover all of this. No framework, no CDN, no JS animation library (Critical Constraint 4).
-- Use `context7` MCP for any external API documentation
+- For external API documentation, use the `context7` MCP server **if it is registered**
+  (check `/mcp`). `install-claude.sh` registers `gova-builder` and `stripe` only, so on a
+  default setup it is not there — fall back to `WebSearch`/`WebFetch` rather than assuming
+  a tool that does not exist.
 - Do not add manual cache calls to model methods — caching is automatic
 - JS safety: NEVER use `element.innerHTML = userValue` (XSS). ALWAYS use `element.textContent` for user-supplied text. ALWAYS use `createElement` for structured HTML.
 
@@ -99,10 +102,21 @@ Subagents must confirm at the start of each task:
 
 If `[x] Payments (Stripe)` is in SEED.md:
 
+> **The webhook lives at `/api/v1/stripe_webhook`, like every other endpoint.**
+> This step used to say `/api/stripe_webhook`, which no tool in the workflow can
+> build: `create_handler` refuses any path outside `/api/v1/`, and hand-wiring
+> the route in `main.go` is forbidden. So a SEED.md with Payments checked had no
+> legal way to create its own handler. Stripe does not care what the path is.
+>
+> Create the handler with `create_handler` during Step 5 like any other endpoint.
+> It needs no CSRF exemption: the request arrives with neither a `csrf_token` nor
+> a session cookie, which is the no-ambient-credential case `middleware.CSRF`
+> already lets through.
+
 1. Read `APP_URL` from `.env`. If empty, STOP:
    > "APP_URL is not set. Set it to your production domain before registering the Stripe webhook."
-2. Register webhook via Stripe MCP: endpoint `${APP_URL}/api/stripe_webhook`
-3. Start local listener: `stripe listen --forward-to http://localhost:[APP_PORT]/api/stripe_webhook`
+2. Register webhook via Stripe MCP: endpoint `${APP_URL}/api/v1/stripe_webhook`
+3. Start local listener: `stripe listen --forward-to http://localhost:[APP_PORT]/api/v1/stripe_webhook`
 4. Extract local webhook secret → write to `.env` as `STRIPE_WEBHOOK_SECRET`
 5. Fire test event: `stripe trigger payment_intent.succeeded`
 6. Verify handler returns 200 in `docker compose logs app`
