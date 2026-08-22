@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // Meta carries list-window information alongside a paginated response.
@@ -155,4 +156,51 @@ func summarizeFields(fields map[string]string) string {
 	}
 	sort.Strings(keys)
 	return keys[0] + ": " + fields[keys[0]]
+}
+
+// apiPathPrefix is the namespace that answers in the envelope. Everything
+// outside it is a URL a person navigates to, not one a client decodes.
+const apiPathPrefix = "/api/"
+
+// NotFoundHandler and MethodNotAllowedHandler are the router's fallbacks: the
+// first for a request that matched no route at all, the second for one whose
+// path matched but whose method did not.
+//
+// They exist because "every JSON response uses one envelope" was not true at
+// the two places a client is most likely to land — a mistyped path and a wrong
+// verb. chi's built-in fallbacks write plain text ("404 page not found"), so a
+// caller that had just been promised {ok, error, code} got text/plain, and
+// api.js's res.json() threw on it. The CodeNotFound and CodeMethodNotAllowed
+// constants above were unreachable through routing at all: only a handler
+// passing those statuses by hand could ever produce them, which is the reverse
+// of how a client encounters them.
+//
+// 405 is the one that bites in practice. scaffold_list registers a GET and no
+// POST, so a creation form pointed at a read-only resource lands here rather
+// than on a handler — and it is a client-side mistake, which is exactly what
+// the envelope's `code` is for.
+//
+// The split by prefix is the same judgement RequireAuth and RequirePageAuth
+// make: an envelope is the right answer under /api/, and the wrong answer for a
+// browser that mistyped a page URL, which should get the ordinary page-level
+// response its user agent knows how to render. So non-API paths keep the
+// standard text response.
+func NotFoundHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, apiPathPrefix) {
+			jsonErrorCode(w, CodeNotFound, "Not found", http.StatusNotFound)
+			return
+		}
+		http.NotFound(w, r)
+	}
+}
+
+func MethodNotAllowedHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, apiPathPrefix) {
+			jsonErrorCode(w, CodeMethodNotAllowed, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
 }

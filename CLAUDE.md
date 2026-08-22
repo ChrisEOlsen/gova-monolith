@@ -56,14 +56,24 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
   ```
 
 ### 2. Scaffold the Backbone
-- **Option A (Standard List):** `scaffold_list(name='project', fields=['name:string', 'status:string'])`
-- **Option B (Custom):** `create_model(name='project', ...)` + `create_page(filename='projects', path='/projects', ...)` + `create_handler(...)` for its JSON endpoints
-- **Option C (Auth — optional):** `scaffold_auth()` → `scaffold_registration()`
+- **Option A (Standard List, read-only):** `scaffold_list(name='project', fields=['name:string', 'status:string'])`
+  — registers `GET` only. If the page needs to create rows, use Option B instead.
+- **Option B (Full CRUD):** `scaffold_resource(name='project', fields=[...])` — list/detail/create/update/delete, all self-registered.
+- **Option C (Custom):** `create_model(name='project', ...)` + `create_page(filename='projects', path='/projects', ...)` + `create_handler(...)` for its JSON endpoints
+- **Option D (Auth — optional):** `scaffold_auth()` → `scaffold_registration()`
 
-> **Auth is optional.** Skip Option C for public sites. `middleware.Auth` is passive — it reads a session cookie if present but never blocks on its own. Protect specific API endpoints with `middleware.RequireAuth`. Protect pages client-side by calling `requireAuth()` at the top of the JS module.
+> **Auth is optional.** Skip Option D for public sites. `middleware.Auth` is passive — it reads a session cookie if present but never blocks on its own. Protect specific API endpoints with `middleware.RequireAuth`. Protect pages by setting `auth: true` on the page, which wraps its route in
+`middleware.RequirePageAuth` (a 303 to `/login`); the generated JS module also calls
+`requireAuth()`. The two are complementary — see **API Manifest & Routing** for why the
+page guard is a courtesy and the endpoint guard is the real boundary.
 
 ### 3. Add Forms
 - Use `add_js_form(page='projects', api_endpoint='/api/v1/projects', ...)` to inject creation forms.
+- **A creation form needs a POST route to post to.** `scaffold_resource`
+  (Option B) registers one; **`scaffold_list` does not** — it is read-only and
+  registers `GET` alone. Adding a form to a `scaffold_list` page produces a
+  405 (`method_not_allowed`) on submit. Either scaffold the resource instead,
+  or add the POST yourself with `create_handler`.
 - Routes are registered automatically — scaffolds and `create_handler` update api.json + routes_gen.go; `create_page` and the page-emitting scaffolds update api.json + pages_gen.go.
 - Edit `.js` files to add custom behavior.
 - Edit `.html` files to adjust layout and structure.
@@ -154,6 +164,14 @@ Every JSON response uses one envelope:
   - Field types are `string`, `int`, `float`, `boolean`, `password`,
     `timestamp`. An unrecognised type is now an error rather than a silent
     `string`.
+- **Unmatched routes answer in the envelope too.** `main.go` installs
+  `handlers.NotFoundHandler()` and `handlers.MethodNotAllowedHandler()` as chi's
+  fallbacks. Without them chi replies in plain text, so the two failures a client
+  is most likely to hit — a mistyped path and a wrong verb — were the two that
+  broke the contract, and `not_found`/`method_not_allowed` were unreachable
+  through routing at all. The fallbacks are scoped to `/api/`: a browser that
+  mistypes a *page* URL still gets the ordinary 404 it knows how to render,
+  the same split `RequireAuth` and `RequirePageAuth` make.
 - **Lists are paginated by default:** `?limit=` (1–200, default 50) and
   `?offset=`. Use `jsonList(w, items, Meta{...})`, not `jsonOK`.
 - **All API routes live under `/api/v1/`.**
@@ -171,6 +189,10 @@ surface — every model (with field types and nullability), every endpoint
 (method, path, handler, auth, kind), and every page (path, file, title). It is
 committed source, not a build artifact.
 
+- **Models are registered by whatever creates them.** Every scaffold **and
+  `create_model`** upsert into `models`. `create_model` registers no route, so
+  it touches `models` alone — but it does register, and a model missing from the
+  manifest while endpoints reference it is a hole nothing goes looking for.
 - **Routes are automatic.** Scaffold tools and `create_handler` upsert into
   `endpoints` and regenerate `src/app/handlers/routes_gen.go`. `main.go` mounts
   them with one `handlers.RegisterGenerated(...)` call. **Never hand-wire a route
@@ -248,7 +270,7 @@ hand-written `models/query.go`. Create/update validation is coarse (malformed bo
 |---|---|---|
 | `inspect_app` | **Before scaffolding** — existing models, handlers, JS pages, routes | — |
 | `execute_sql` | Create tables — always before `create_model` | — |
-| `create_model` | Data layer; table must exist first. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
+| `create_model` | Data layer; table must exist first. **Registers the model in `api.json`'s `models` array** — it creates no route, so `endpoints` and `pages` are untouched. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. | Yes — CRUD roundtrip |
 | `create_handler` | Single custom JSON endpoint stub. Takes `method` + `path`; self-registers the route into `api.json` and `routes_gen.go` — no manual wiring in `main.go`. | No — implement the TODO, then write its test yourself (`gova-writing-plans` Step 3b) |
 | `create_page` | A page: `.html` shell + `.js` module. Takes a **human-facing** `path` (`/dashboard`, `/settings`) and **rejects anything under `/api/`** — that namespace is `create_handler`'s. Registers a row in `api.json`'s `pages` array and regenerates `pages_gen.go`. **No Go handler is created or needed** — the generated `pageFile` helper serves the shell. Use `create_handler` for the JSON endpoints the page's JS calls. | Yes — `pages_gen_test.go` asserts every registered page serves its shell |
 | `scaffold_list` | Non-personalized list: model + JSON handler + `.html` + `.js`. Registers `GET /api/v1/<plural>` **and serves the page at `/<plural>`**. Validates `fields` against the real table via `PRAGMA table_info`; a mismatch fails the call. Nullable columns become Go pointers. — read-only; use `scaffold_resource` for full CRUD | Yes — CRUD + list-handler + page-serving tests |
@@ -295,7 +317,7 @@ Never hand-wire a route in `main.go`, and never edit `routes_gen.go`,
 
 **JS module structure:**
 ```js
-import { get, post, del } from '/static/js/lib/api.js';
+import { get, post, put, del } from '/static/js/lib/api.js';
 import { requireAuth } from '/static/js/lib/auth.js'; // protected pages only
 
 const listEl = document.getElementById('item-list');

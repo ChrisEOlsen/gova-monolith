@@ -41,6 +41,13 @@ func main() {
 	r.Use(middleware.CSRF)
 	r.Use(middleware.Auth)
 
+	// Fallbacks for a path that matched no route, and for a method that is not
+	// registered on a path that did. chi's defaults answer in plain text, which
+	// breaks the envelope contract for /api/ callers; these answer in the
+	// envelope there and leave human-facing URLs alone.
+	r.NotFound(handlers.NotFoundHandler())
+	r.MethodNotAllowed(handlers.MethodNotAllowedHandler())
+
 	// Static files
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 
