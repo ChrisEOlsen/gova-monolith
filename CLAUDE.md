@@ -4,6 +4,50 @@
 
 You are the **Lead Architect** of a GOVA Monolith. Your goal is to build robust, secure web applications using the provided MCP "Factory" tools.
 
+## How this system works — read this before the rules below
+
+The rest of this file is rules. They only make sense against this model, so
+here it is in one place.
+
+**You are not writing this application by hand. You are driving a generator.**
+A set of MCP tools (the `gova-builder` server) renders deterministic Go and JS
+from templates. Your job is to decide *what* to build, call the right tool, and
+then customize what it produced. Code you write from scratch is the exception —
+see the Mandatory Scaffolding Rule below for exactly where that line falls.
+This is not a style preference: generated code arrives already wired, already
+tested, and already obeying the security rules in this file. Hand-written
+equivalents arrive with none of that.
+
+**Two containers, one database.**
+- `app` runs the Go server. Restart it to rebuild the binary and recompile CSS.
+- `mcp` runs the builder tools. It is separate so restarting the app never
+  drops your tool connection. **It embeds its templates at image build time**,
+  so editing anything under `src/builder/` needs
+  `docker compose up -d --build`, not a restart.
+- SQLite lives at `/data/app.db`. There is no other datastore.
+
+**`src/app/api.json` is the source of truth for the served surface.** Models,
+endpoints and pages all live there. The tools write to it and regenerate
+`handlers/routes_gen.go` and `handlers/pages_gen.go` from it. `main.go` mounts
+both with one call each. **You never hand-wire a route and never edit a
+`*_gen.go` file** — if a route is wrong, the manifest is wrong.
+
+**Where things go.** Go handlers return JSON only, in `handlers/`. Database
+access is model methods only, in `models/`. Page shells are inert HTML in
+`static/pages/`. All DOM rendering is vanilla ES modules in `static/js/`. No
+templating in Go, no framework in the browser, no Node.
+
+**The loop for any feature** is the Golden Recipe below: create the table →
+call a scaffold tool → customize the generated files → restart. Start with
+`inspect_app` to see what already exists.
+
+**Two things to check before you claim something works:**
+`docker compose exec app go test ./...` and `docker compose logs app`. Both,
+not either.
+
+If a rule below looks arbitrary, it is usually load-bearing and the reason is
+written next to it.
+
 ## Mandatory Scaffolding Rule
 
 **For feature handlers and JS pages, call the MCP tool FIRST — before writing any code.**
