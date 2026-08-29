@@ -33,8 +33,8 @@ step "Choosing a model profile"
 
 echo "  Which provider should this project's agents default to?"
 echo ""
-echo "    1) Anthropic     — opus-5 orchestrates, sonnet-5 implements/reviews"
-echo "    2) Ollama Cloud  — glm-5.3 throughout, gpt-oss:20b for small tasks"
+echo "    1) Anthropic     — opus-5 plans, sonnet-5 implements/reviews"
+echo "    2) Ollama Cloud  — glm-5.3 plans and reviews, glm-5.3-flash implements"
 echo "    3) Leave unset   — everything inherits whatever model you pick in the TUI"
 echo ""
 printf "  Profile [1/2/3, default 3]: "
@@ -47,6 +47,7 @@ case "$PROFILE" in
         MODEL_PROVIDER="anthropic"
         MODEL_LEAD="anthropic/claude-opus-5"
         MODEL_WORK="anthropic/claude-sonnet-5"
+        MODEL_REVIEW="anthropic/claude-sonnet-5"
         MODEL_SMALL="anthropic/claude-haiku-4-5"
         ;;
     2)
@@ -54,8 +55,16 @@ case "$PROFILE" in
         # glm-5.3 shipped ahead of the models.dev catalogue, so it resolves only
         # if it is declared under provider.ollama-cloud.models in
         # ~/.config/opencode/opencode.jsonc. The check below catches its absence.
+        # glm-5.3-flash is already in the catalogue and needs no override.
+        #
+        # Flash implements, full reviews. The implementer works from a task brief
+        # that already fixes the MCP call, the paths and the names -- the cheaper
+        # model is authoring a customization against a spec, not deciding the
+        # design. The reviewer is the only gate between that output and the next
+        # task, so it does not get downgraded alongside the thing it checks.
         MODEL_LEAD="ollama-cloud/glm-5.3"
-        MODEL_WORK="ollama-cloud/glm-5.3"
+        MODEL_WORK="ollama-cloud/glm-5.3-flash"
+        MODEL_REVIEW="ollama-cloud/glm-5.3"
         MODEL_SMALL="ollama-cloud/gpt-oss:20b"
         ;;
     3)
@@ -67,7 +76,7 @@ case "$PROFILE" in
 esac
 
 if [ -n "$MODEL_PROVIDER" ]; then
-    ok "Profile: $MODEL_PROVIDER ($MODEL_LEAD / $MODEL_WORK)"
+    ok "Profile: $MODEL_PROVIDER — plan $MODEL_LEAD, implement $MODEL_WORK, review $MODEL_REVIEW"
     # `opencode models <provider>` prints "Provider not found" when the provider
     # has no credentials, so this catches an unauthenticated profile here rather
     # than at the first /build.
@@ -78,7 +87,7 @@ if [ -n "$MODEL_PROVIDER" ]; then
         fi
     else
         ok "$MODEL_PROVIDER credentials found"
-        for m in "$MODEL_LEAD" "$MODEL_WORK" "$MODEL_SMALL"; do
+        for m in "$MODEL_LEAD" "$MODEL_WORK" "$MODEL_REVIEW" "$MODEL_SMALL"; do
             opencode models "$MODEL_PROVIDER" 2>/dev/null | grep -qx "$m" \
                 || warn "$m is not in this provider's model list — declare it under provider.$MODEL_PROVIDER.models in ~/.config/opencode/opencode.jsonc"
         done
@@ -87,10 +96,10 @@ fi
 
 step "Generating opencode.json"
 
-python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" "${MODEL_LEAD:-}" "${MODEL_WORK:-}" "${MODEL_SMALL:-}" <<'PYEOF'
+python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" "${MODEL_LEAD:-}" "${MODEL_WORK:-}" "${MODEL_REVIEW:-}" "${MODEL_SMALL:-}" <<'PYEOF'
 import json, sys, os
 
-container, project_dir, lead, work, small = sys.argv[1:6]
+container, project_dir, lead, work, review, small = sys.argv[1:7]
 config_path = os.path.join(project_dir, "opencode.json")
 
 # This file is machine-specific and gitignored -- it is opencode's counterpart
@@ -117,7 +126,7 @@ if lead:
     # and carries no `model` key -- so these survive the merge.
     config["agent"] = {
         "gova-implementer": {"model": work},
-        "gova-reviewer": {"model": work},
+        "gova-reviewer": {"model": review},
         "gova-architect": {"model": lead},
     }
 
@@ -127,7 +136,7 @@ with open(config_path, "w") as f:
 
 print(f"  + opencode.json → gova-builder via {container}")
 if lead:
-    print(f"  + model {lead}, small_model {small}, subagents {work}")
+    print(f"  + plan {lead} | implement {work} | review {review} | small {small}")
 PYEOF
 
 ok "opencode.json generated"
