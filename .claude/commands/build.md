@@ -22,7 +22,7 @@ Read `.env`. Verify `SESSION_SECRET` is set to something other than the placehol
 Use the `gova-brainstorm` skill with the contents of `SEED.md` as input.
 
 - Run its **Scale Gate** first and state the classification. A full `/build` from a fresh `SEED.md` is normally Standard or Large. An incremental change to an existing app is often Small — on that path there is no spec document, and Step 3's plan is the only written artifact.
-- Batch clarifying questions with `AskUserQuestion` — features and data model in one call, auth/resources/integrations in the next. Do not ask one question per message.
+- Batch clarifying questions with the harness's batched-question tool (`AskUserQuestion` in Claude Code, `question` in opencode) — features and data model in one call, auth/resources/integrations in the next. Do not ask one question per message.
 - Wait for developer approval before proceeding
 
 ---
@@ -89,9 +89,10 @@ Subagents must confirm at the start of each task:
   - **Interaction states:** visible hover, focus, active, and disabled states on everything interactive. Focus rings stay — style them, don't remove them.
   - **Empty, loading, and error states are designed, not blank.** A list with no rows shows something intentional.
   - Tailwind utilities plus CSS transitions cover all of this. No framework, no CDN, no JS animation library (Critical Constraint 4).
-- Use the `context7` MCP server for external API documentation. `install-claude.sh`
-  registers it alongside `stripe`. If `/mcp` does not list it, fall back to
-  `WebSearch`/`WebFetch` rather than stopping.
+- Use the `context7` MCP server for external API documentation. Both installers
+  register it alongside `stripe`. If it is not connected (`/mcp` in Claude Code,
+  `opencode mcp list` in opencode), fall back to web search/fetch rather than
+  stopping.
 - Do not add manual cache calls to model methods — caching is automatic
 - JS safety: NEVER use `element.innerHTML = userValue` (XSS). ALWAYS use `element.textContent` for user-supplied text. ALWAYS use `createElement` for structured HTML.
 
@@ -125,7 +126,7 @@ If `[x] Payments (Stripe)` is in SEED.md:
 
 ## Step 6: Security Analysis
 
-Run the `/security:analyze` command on `src/app/`.
+Run the security audit command on `src/app/` — `/security:analyze` in Claude Code, `/security-analyze` in opencode.
 
 ---
 
@@ -134,7 +135,7 @@ Run the `/security:analyze` command on `src/app/`.
 If Critical, High, or Medium findings exist:
 1. Write a targeted fix plan
 2. Execute fixes
-3. Re-run `/security:analyze`
+3. Re-run the security audit command
 
 ---
 

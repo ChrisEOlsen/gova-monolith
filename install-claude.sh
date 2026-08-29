@@ -2,97 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLAUDE_DIR="$HOME/.claude"
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
-warn() { echo -e "  ${YELLOW}!${NC} $1"; }
-fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
-step() { echo -e "\n${BOLD}▶ $1${NC}"; }
+# shellcheck source=install-common.sh
+source "$SCRIPT_DIR/install-common.sh"
 
 echo ""
 echo -e "${BOLD}GOVA Monolith — Claude Code Setup${NC}"
 echo "======================================"
 
-step "Checking prerequisites"
-command -v docker >/dev/null 2>&1 || fail "docker not found — install Docker Desktop"
-command -v git    >/dev/null 2>&1 || fail "git not found"
-command -v curl   >/dev/null 2>&1 || fail "curl not found"
-# openssl mints SESSION_SECRET below. It was not checked here, so a machine
-# without it failed mid-run under `set -e` with no explanation.
-command -v openssl >/dev/null 2>&1 || fail "openssl not found — needed to generate SESSION_SECRET"
-ok "docker, git, curl, openssl present"
-
-command -v stripe >/dev/null 2>&1 \
-    && ok "stripe CLI present" \
-    || warn "stripe CLI not found — install for local webhook testing: https://stripe.com/docs/stripe-cli"
-
-step "Setting up .env"
-
-ENV_FILE="$SCRIPT_DIR/.env"
-EXAMPLE_FILE="$SCRIPT_DIR/env.example"
-
-set_env_var() {
-    local file="$1" key="$2" value="$3"
-    python3 - "$file" "$key" "$value" <<'PYEOF'
-import sys
-path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
-    lines = f.readlines()
-lines = [f"{key}={value}\n" if l.startswith(f"{key}=") else l for l in lines]
-with open(path, "w") as f:
-    f.writelines(lines)
-PYEOF
-}
-
-if [ ! -f "$ENV_FILE" ]; then
-    cp "$EXAMPLE_FILE" "$ENV_FILE"
-    ok "Copied env.example → .env"
-else
-    ok ".env already exists"
-fi
-
-CURRENT_APP_NAME=$(grep -E '^APP_NAME=' "$ENV_FILE" | head -1 | cut -d= -f2 | tr -d '"' | tr -d "'")
-CURRENT_APP_NAME="${CURRENT_APP_NAME:-my-gova-app}"
-printf "  App name [%s]: " "$CURRENT_APP_NAME"
-read -r INPUT_APP_NAME </dev/tty
-APP_NAME="${INPUT_APP_NAME:-$CURRENT_APP_NAME}"
-
-# APP_NAME is not just a label: docker-compose.yml uses it as the compose
-# project name (`name: ${APP_NAME:-my-gova-app}`), which is what every container
-# is named after and what CONTAINER_NAME below is built from. Compose only
-# accepts lowercase letters, digits, dash and underscore, so a natural answer
-# like "Task Manager" made `docker compose up` fail several steps later with an
-# error that pointed nowhere near this prompt. Normalise it here instead.
-NORMALIZED_APP_NAME=$(printf '%s' "$APP_NAME" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -e 's/[^a-z0-9_-]\{1,\}/-/g' -e 's/^[^a-z0-9]*//' -e 's/[-_]*$//')
-if [ -z "$NORMALIZED_APP_NAME" ]; then
-    fail "App name must contain at least one letter or digit"
-fi
-if [ "$NORMALIZED_APP_NAME" != "$APP_NAME" ]; then
-    warn "App name normalised for Docker: '$APP_NAME' → '$NORMALIZED_APP_NAME'"
-    APP_NAME="$NORMALIZED_APP_NAME"
-fi
-set_env_var "$ENV_FILE" "APP_NAME" "$APP_NAME"
-ok "APP_NAME set to: $APP_NAME"
-
-CURRENT_SECRET=$(grep -E '^SESSION_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2 | tr -d '"' | tr -d "'")
-if [ "$CURRENT_SECRET" = "change-me-to-32-random-bytes-before-use" ] || [ -z "$CURRENT_SECRET" ]; then
-    SESSION_SECRET=$(openssl rand -hex 32)
-    set_env_var "$ENV_FILE" "SESSION_SECRET" "$SESSION_SECRET"
-    ok "SESSION_SECRET generated and written to .env"
-else
-    ok "SESSION_SECRET already set"
-fi
-
-CONTAINER_NAME="${APP_NAME}-mcp-1"
-ok "MCP container: $CONTAINER_NAME"
+gova_check_prereqs
+gova_setup_env "$SCRIPT_DIR"
 
 step "Configuring ~/.claude/settings.json"
 
@@ -128,6 +47,7 @@ if settings.get("extraKnownMarketplaces", {}).pop("ui-ux-pro-max-skill", None) i
 if settings.get("enabledPlugins", {}).pop("ui-ux-pro-max@ui-ux-pro-max-skill", None) is not None:
     print("  ~ removed stale ui-ux-pro-max plugin")
 
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
@@ -148,6 +68,8 @@ import json, os, sys
 #              not exist.
 # These go in ~/.claude.json (user scope). The project's own .mcp.json is
 # generated further down for gova-builder and is rewritten per project.
+# install-opencode.sh registers the same two servers in .opencode/opencode.json,
+# which is project-scoped -- opencode has no user-scope equivalent of this file.
 REMOTE_SERVERS = {
     "stripe": {"type": "http", "url": "https://mcp.stripe.com/"},
     "context7": {"type": "http", "url": "https://mcp.context7.com/mcp"},
@@ -185,20 +107,8 @@ PYEOF
 
 ok "Remote MCP servers registered"
 
-step "Building Docker image"
-
-cd "$SCRIPT_DIR"
-docker compose up -d --build
-ok "Container up"
-
-step "Verifying MCP server binary"
-
-sleep 2
-if docker exec "$CONTAINER_NAME" /usr/local/bin/mcp-server </dev/null >/dev/null 2>&1; then
-    ok "MCP server binary present at /usr/local/bin/mcp-server"
-else
-    fail "MCP server binary not found. Run: docker compose logs mcp"
-fi
+gova_build_containers "$SCRIPT_DIR"
+gova_verify_mcp_binary "$CONTAINER_NAME"
 
 step "Generating .mcp.json"
 
@@ -236,4 +146,7 @@ echo "  2. Add API keys to .env if needed"
 echo "  3. Open Claude Code:  claude"
 echo "  4. Verify MCP tools:  /mcp"
 echo "  5. Start building:    /build"
+echo ""
+echo "  Using opencode too? Run ./install-opencode.sh — it shares this .env,"
+echo "  these containers, and the same /build and /launch commands."
 echo ""

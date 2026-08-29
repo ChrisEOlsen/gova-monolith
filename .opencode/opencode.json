@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    },
+    "stripe": {
+      "type": "remote",
+      "url": "https://mcp.stripe.com/",
+      "enabled": true
+    }
+  },
+  "permission": {
+    "webfetch": "allow",
+    "websearch": "allow"
+  }
+}

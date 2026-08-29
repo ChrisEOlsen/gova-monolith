@@ -8,7 +8,7 @@ A template repository for building AI-driven web applications with the GOVA stac
 
 The AI doesn't write the important code — it calls MCP tools that render deterministic templates. No HTMX, no Alpine.js, no Templ compile step. Go handles JSON API. Vanilla ES modules handle all DOM rendering.
 
-**Two containers, one SQLite file.** `app` runs the Go server; `mcp` runs the builder tools so restarting `app` never disconnects Claude Code. No Redis, no MySQL, no Nginx, no frontend build step.
+**Two containers, one SQLite file.** `app` runs the Go server; `mcp` runs the builder tools so restarting `app` never disconnects your agent. No Redis, no MySQL, no Nginx, no frontend build step.
 
 ## Built In, Not Bolted On
 
@@ -26,7 +26,14 @@ cp env.example .env
 
 | Tool | Install | Context file | Commands |
 |---|---|---|---|
-| **Claude Code** | `./install-claude.sh` | `CLAUDE.md` | `/build`, `/launch` |
+| **Claude Code** | `./install-claude.sh` | `CLAUDE.md` | `/build`, `/launch`, `/security:analyze` |
+| **opencode** | `./install-opencode.sh` | `AGENTS.md` → `CLAUDE.md` | `/build`, `/launch`, `/security-analyze` |
+
+Run either, or both — they share one `.env` and one pair of containers, and the
+rules, commands and skills are single files that both harnesses read (see
+`CLAUDE.md` § Harnesses). The opencode installer also offers a model profile:
+Anthropic, or Ollama Cloud for the times you want to run the build on
+`ollama-cloud` models.
 
 Then:
 1. Fill in `SEED.md` with your app idea

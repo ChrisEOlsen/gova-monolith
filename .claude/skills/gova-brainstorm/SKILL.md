@@ -18,7 +18,7 @@ Do NOT invoke any implementation skill, write any code, or call any MCP scaffold
 Before asking anything, classify the work. This decides which path you take, and it is the difference between a 6-round-trip design cycle and a 2-round-trip one.
 
 **Small** — a bugfix, a constraint or convention change, one endpoint, one model, or a change confined to existing infrastructure. No new subsystem.
-→ **Skip the spec document.** Use plan mode for the dialogue — it is harness-enforced read-only, so the HARD-GATE holds mechanically rather than on your promise. Batch your questions, get the approach approved, then invoke `gova-writing-plans` for a short plan. Do not write to `docs/superpowers/specs/`.
+→ **Skip the spec document.** Use plan mode for the dialogue (Claude Code's plan mode, or opencode's `plan` agent) — it is harness-enforced read-only, so the HARD-GATE holds mechanically rather than on your promise. Batch your questions, get the approach approved, then invoke `gova-writing-plans` for a short plan. Do not write to `docs/superpowers/specs/`.
 
 **Standard** — a new feature with its own table, page, and routes; or two or more features that interact.
 → Full path below: questions → approaches → design → spec doc → plan.
@@ -53,7 +53,7 @@ You MUST create a task for each of these items and complete them in order. Items
 - Check out the current project state first (`SEED.md`, docs, recent commits)
 - Before asking detailed questions, assess scope: if `SEED.md` describes multiple independent subsystems, flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
 - If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec → plan → implementation cycle.
-- For appropriately-scoped projects, ask questions in **batches**, not one per message. Use `AskUserQuestion` — it takes up to 4 questions per call, each with 2-4 options and optional multi-select. One call that resolves four decisions beats four calls that resolve one each; serial questioning is pure latency and is the single largest avoidable cost in this phase.
+- For appropriately-scoped projects, ask questions in **batches**, not one per message. Use the harness's batched-question tool (`AskUserQuestion` in Claude Code, `question` in opencode) — it takes several questions per call, each with a few options and optional multi-select. One call that resolves four decisions beats four calls that resolve one each; serial questioning is pure latency and is the single largest avoidable cost in this phase.
 - Group a batch by theme so the answers are independently meaningful — data model in one batch, auth and integrations in the next. Do not batch a question whose options depend on the answer to another question in the same batch; that one waits for the following round.
 - Prefer multiple choice when possible, but open-ended is fine — put it in the same batch as a plain question.
 - Two batches is a normal budget for a Standard project, one for a Small one. If you are reaching for a third, you are designing by interview instead of proposing something concrete and letting the user correct it.
@@ -120,7 +120,7 @@ Wait for the user's response. If they request changes, make them and re-run the 
 ## Key Principles
 
 - **Scale the ceremony to the change** - The Scale Gate is the first decision, not an afterthought
-- **Batch questions** - `AskUserQuestion`, up to 4 at a time; never one question per message
+- **Batch questions** - `AskUserQuestion` (Claude Code) or `question` (opencode), several at a time; never one question per message
 - **Multiple choice preferred** - Easier to answer than open-ended when possible
 - **YAGNI ruthlessly** - Remove unnecessary features from all designs
 - **Explore alternatives** - Propose 2-3 approaches on Standard+ before settling

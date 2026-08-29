@@ -3,7 +3,10 @@
 Use this template when dispatching an implementer subagent.
 
 ```
-Subagent (general-purpose):
+Subagent:
+  Claude Code — subagent_type: general-purpose, plus an explicit `model` (below)
+  opencode    — subagent_type: gova-implementer; there is no per-dispatch model
+                parameter, the model comes from .opencode/agent/gova-implementer.md
   description: "Implement Task N: [task name]"
   model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
          model silently inherits the session's most expensive one]

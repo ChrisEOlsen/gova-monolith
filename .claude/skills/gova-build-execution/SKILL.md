@@ -27,7 +27,7 @@ Execute the plan by dispatching a fresh implementer subagent per task, a task re
    - Write diff file (`scripts/review-package BASE HEAD`), dispatch task reviewer (`task-reviewer-prompt.md`)
    - If reviewer finds Critical/Important issues, dispatch a fix subagent, then re-review
    - Once spec ✅ and quality approved, mark task complete in todos and the progress ledger
-3. Once all tasks are complete, invoke the `code-review` skill for a final whole-branch review of the full branch diff against the commit the branch started from
+3. Once all tasks are complete, run a final whole-branch review of the full branch diff against the commit the branch started from — the `code-review` skill in Claude Code, or a `gova-architect` dispatch (or `/review`) in opencode
 4. If the final review finds issues, dispatch one fix subagent with the complete findings list (not one fixer per finding), then hand control back to `/build` to continue to Step 6 (Security Analysis)
 
 ## Pre-Flight Plan Review
@@ -52,6 +52,14 @@ Use the least powerful model that can handle each role to conserve cost and incr
 **Review tasks**: choose the model with the same judgment, scaled to the diff's size, complexity, and risk. A small mechanical diff does not need the most capable model.
 
 **Always specify the model explicitly when dispatching a subagent.** An omitted model inherits your session's model — often the most capable and most expensive — which silently defeats this section.
+
+**Under opencode, the model is not a dispatch argument.** Its `task` tool has no
+`model` parameter — a subagent's model comes from its agent definition. The
+tiers above are pinned in config instead: dispatch `subagent_type:
+gova-implementer` for implementation and fix tasks, `gova-reviewer` for task
+review, and `gova-architect` for the final whole-branch review. Their models
+live in `.opencode/agent/*.md` and the generated `opencode.json`; to retier a
+run, edit those rather than the dispatch.
 
 **Turn count beats token price.** Wall-clock and context cost scale with how many turns a subagent takes, and the cheapest models routinely take 2-3× the turns on multi-step work — costing more overall. Use a mid-tier model as the floor for reviewers and for implementers.
 
@@ -116,7 +124,7 @@ Conversation memory does not survive compaction. Track progress in a ledger file
 
 - [implementer-prompt.md](implementer-prompt.md) - Dispatch implementer subagent
 - [task-reviewer-prompt.md](task-reviewer-prompt.md) - Dispatch task reviewer subagent (spec compliance + code quality)
-- Final whole-branch review: use the `code-review` skill
+- Final whole-branch review: the `code-review` skill (Claude Code) or a `gova-architect` dispatch (opencode)
 
 ## Advantages
 
@@ -201,7 +209,7 @@ Task reviewer: Spec ✅ - all requirements met, MCP tool called first, nothing e
 ...
 
 [After all tasks]
-[Invoke code-review skill for final whole-branch review]
+[Final whole-branch review: code-review skill / gova-architect dispatch]
 Final reviewer: All requirements met, ready to continue to security analysis
 
 Done!

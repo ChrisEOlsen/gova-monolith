@@ -9,7 +9,10 @@
 src/app/static/css/style.css
 src/builder/builder
 logs/
-opencode.json
+# Generated per machine by install-opencode.sh (opencode's counterpart to
+# .mcp.json). Anchored to the repo root on purpose: a bare `opencode.json`
+# also matched .opencode/opencode.json, which is committed config.
+/opencode.json
 .gemini/settings.json
 data/
 

@@ -1,8 +1,13 @@
 > **Automated Workflow:** This project uses `/build` to build from `SEED.md` and `/launch` to deploy. Run `/build` to start.
 
-# Claude Code Context: GOVA Monolith
+# Agent Context: GOVA Monolith
 
 You are the **Lead Architect** of a GOVA Monolith. Your goal is to build robust, secure web applications using the provided MCP "Factory" tools.
+
+> This file is read by Claude Code as `CLAUDE.md` and by opencode as
+> `AGENTS.md` — the second is a symlink to the first, so there is one copy of
+> these rules and it cannot drift. See **Harnesses** at the end for the handful
+> of places the two differ.
 
 ## How this system works — read this before the rules below
 
@@ -433,3 +438,54 @@ const errEl = document.createElement('p');
 errEl.className = 'text-sm text-red-600';
 errEl.textContent = res.error ?? 'Something went wrong.'; // textContent — safe
 ```
+
+---
+
+## Harnesses
+
+This project runs under **Claude Code** and **opencode**. The workflow is the
+same in both — the same `/build`, the same skills, the same MCP tools against
+the same two containers — because everything that defines it lives in files
+both harnesses read:
+
+| What | Where it lives | How each harness finds it |
+|---|---|---|
+| These rules | `CLAUDE.md` | Claude Code reads it directly; opencode reads `AGENTS.md`, a symlink to it |
+| `/build`, `/launch`, security audit | `.claude/commands/` | Claude Code reads the directory; `.opencode/command/*.md` are symlinks into it |
+| The three `gova-*` skills | `.claude/skills/` | Both — opencode scans `.claude/skills/**/SKILL.md` natively |
+| `gova-builder` MCP | generated per machine | `.mcp.json` (Claude Code) / `opencode.json` (opencode), both gitignored |
+| `stripe`, `context7` MCP | — | `~/.claude.json` user scope (Claude Code) / `.opencode/opencode.json` project scope (opencode) |
+
+Install with `./install-claude.sh`, `./install-opencode.sh`, or both — they
+share `install-common.sh`, one `.env`, and one pair of containers.
+
+**Nothing above is duplicated per harness. Do not fork it.** If a rule needs
+changing, change the one file; if a command needs changing, edit the file in
+`.claude/commands/` and the opencode symlink follows.
+
+### The four differences
+
+1. **Batched questions.** `AskUserQuestion` in Claude Code, the `question` tool
+   in opencode. Both take several questions per call with multiple-choice
+   options; the skills' "batch, never one question per message" rule is about
+   the call, not the tool's name.
+2. **Subagent dispatch.** Claude Code's `Agent`/Task tool takes a `model` per
+   dispatch. opencode's `task` tool does **not** — a subagent's model comes
+   from its agent definition, so the tiering in `gova-build-execution` §
+   Model Selection is expressed as config: `.opencode/agent/gova-implementer.md`,
+   `gova-reviewer.md` and `gova-architect.md`, with their models pinned in the
+   generated `opencode.json`. Under opencode, dispatch by naming one of those
+   three as `subagent_type`.
+3. **The final whole-branch review.** Claude Code has a `code-review` skill.
+   opencode has a built-in `/review` command, or dispatch `gova-architect`
+   over the full branch diff.
+4. **Command names.** `/build` and `/launch` are identical. The security audit
+   is `/security:analyze` in Claude Code and `/security-analyze` in opencode —
+   nested command directories name themselves differently in the two.
+
+### Restarting after config changes
+
+opencode loads its config once at startup and does not hot-reload. After
+editing `opencode.json`, anything under `.opencode/`, a skill, or a command,
+quit and reopen opencode. (This is the same trap as the `mcp` image embedding
+its templates at build time — see **Infrastructure** above — one level up.)

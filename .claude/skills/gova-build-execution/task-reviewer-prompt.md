@@ -9,7 +9,10 @@ more, nothing less) and is well-built (clean, maintainable, follows the
 GOVA scaffolding rule)
 
 ```
-Subagent (general-purpose):
+Subagent:
+  Claude Code — subagent_type: general-purpose, plus an explicit `model` (below)
+  opencode    — subagent_type: gova-reviewer; there is no per-dispatch model
+                parameter, the model comes from .opencode/agent/gova-reviewer.md
   description: "Review Task N (spec + quality)"
   model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
          model silently inherits the session's most expensive one]
