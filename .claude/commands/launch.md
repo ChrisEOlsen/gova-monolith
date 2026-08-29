@@ -33,11 +33,25 @@ If `docker-compose.yml` does not have a `tunnel:` service, append under `service
 ```yaml
   tunnel:
     image: cloudflare/cloudflared:latest
+    pull_policy: always
     command: tunnel run
     restart: unless-stopped
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
 ```
+
+`pull_policy: always` is load-bearing, not tidiness. `:latest` is only a tag —
+`docker compose up -d` resolves it from the **local image cache** and never
+checks the registry if any copy is already there. A machine that pulled
+`cloudflared` once months ago runs that build forever while the compose file
+reads `latest`. cloudflared is the wrong image to let rot: Cloudflare's edge
+refuses connections from clients that fall too far behind, so the failure
+arrives later as a tunnel that stops registering, with nothing in the compose
+file pointing at the cause. `always` re-resolves the tag on every `up`.
+
+Do **not** pin a version number here instead. This is a template — a pin
+written today is the outdated version every project inherits tomorrow, which is
+the exact failure this line prevents.
 
 ---
 
@@ -55,6 +69,18 @@ docker compose up -d
 docker compose logs tunnel
 ```
 Expected: `connection registered` or `Registered tunnel connection`.
+
+Confirm the pull actually landed a current build:
+
+```bash
+docker compose exec tunnel cloudflared --version
+```
+
+Compare against the newest release at
+https://github.com/cloudflare/cloudflared/releases/latest. Versions are
+`YYYY.M.N`, so staleness is readable at a glance. More than a few months behind
+means the pull was skipped — check that `pull_policy: always` is present on the
+`tunnel` service.
 
 ---
 
