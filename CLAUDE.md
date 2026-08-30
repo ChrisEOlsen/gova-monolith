@@ -88,6 +88,37 @@ Branch isolation (keeping the build off `main` until reviewed) is still worth ha
 
 ---
 
+## Parallel Builds
+
+Implementation subagents may run concurrently: **at most 3 in flight**, and
+only tasks with no dependency edge (independent `Consumes`/`Produces`) and no
+shared file may share a wave. The safety story has three layers, each covering
+a failure the others cannot:
+
+1. **The builder serializes itself.** Every mutating tool call (`scaffold_*`,
+   `create_*`, `execute_sql`) holds a workspace lock across its whole
+   read→write→regenerate transaction (`src/builder/lock.go`), and every file
+   it writes lands via temp-file+rename. Concurrent scaffolds can no longer
+   lose registrations in `api.json` or tear `routes_gen.go`. You get this
+   automatically; no prompt rule needs to mention it.
+2. **Restarts and verifies serialize.** Subagents use the shared scripts —
+   `scripts/restart-app` (flock'd restart + readiness wait) and
+   `scripts/verify` (same lock, then `go test ./...` with failure
+   classification: a failure naming only files outside the task's list is
+   *foreign* — a sibling mid-customization — and is retried, then treated as
+   advisory; a failure naming the task's own files is real). The
+   wave barrier runs `scripts/verify --strict`, the authoritative full-suite
+   gate with no classification.
+3. **Git staging is per-task.** Implementers stage only files in their task's
+   Files list — never `git add -A`, which would sweep up a sibling's
+   in-progress edits. Review packages are pinned to the implementer's reported
+   SHA (`review-package BASE <sha>`), never `HEAD`, so a sibling's
+   just-landed commit cannot leak into a task's diff.
+
+Falling back: repeated foreign failures in a wave mean contention, not
+breakage — drop to 2 (or 1) in flight for the next wave. When in doubt,
+serialize.
+
 ## The Golden Recipe
 
 ### 1. Database First

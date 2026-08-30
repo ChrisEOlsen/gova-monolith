@@ -54,7 +54,11 @@ Derive branch name from app name in SEED.md: "Task Manager" → `build/task-mana
 
 ## Step 5: Implement
 
-Use `gova-build-execution` to execute the plan.
+Use `gova-build-execution` to execute the plan. It dispatches one implementer
+subagent per task — serially, or in parallel waves of at most 3 for tasks
+with no dependency edge and no shared file (its § Parallel Waves governs; the
+builder and the shared scripts serialize the shared state, so parallelism is
+correct by construction, not by luck).
 
 ### Mandatory Scaffolding Rule for every subagent:
 

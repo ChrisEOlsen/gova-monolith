@@ -543,11 +543,14 @@ func formatGo(name, src string) string {
 }
 
 // writeGoFile writes src to path, gofmt-ing it first when path is a .go file.
+// The write itself is an atomic temp+rename: parallel subagents read these
+// files (go test inside the app container compiles the whole package) and a
+// truncated .go mid-write is a compile error in a file nobody is editing.
 func writeGoFile(path, src string) error {
 	if strings.HasSuffix(path, ".go") {
 		src = formatGo(path, src)
 	}
-	return os.WriteFile(path, []byte(src), 0644)
+	return atomicWriteFile(path, []byte(src), 0644)
 }
 
 func renderToString(tmplName string, data TemplateData) (string, error) {
@@ -683,53 +686,83 @@ func main() {
 
 // Tool handler stubs — implemented in subsequent tasks
 func handleInspectApp(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	scan := func(pattern string) []string {
-		files, _ := filepath.Glob(pattern)
-		names := []string{}
-		for _, f := range files {
-			base := filepath.Base(f)
-			if base == ".gitkeep" {
-				continue
+	// Read under the workspace read guard: without it, this tool can catch
+	// api.json between a concurrent scaffold's atomic rename and its
+	// _gen.go regeneration, and report divergence the scaffold is about to
+	// close on its own.
+	var out string
+	var err error
+	err = withWorkspaceRead(func() error {
+		scan := func(pattern string) []string {
+			files, _ := filepath.Glob(pattern)
+			names := []string{}
+			for _, f := range files {
+				base := filepath.Base(f)
+				if base == ".gitkeep" {
+					continue
+				}
+				names = append(names, base)
 			}
-			names = append(names, base)
+			return names
 		}
-		return names
-	}
-	onDisk := onDiskFiles{
-		Models:   scan("/src/app/models/*.go"),
-		Handlers: scan("/src/app/handlers/*.go"),
-		Pages:    scan("/src/app/static/pages/*.html"),
-		JS:       scan("/src/app/static/js/*.js"),
-	}
-	m, err := readManifestAt(manifestFilePath)
+		onDisk := onDiskFiles{
+			Models:   scan("/src/app/models/*.go"),
+			Handlers: scan("/src/app/handlers/*.go"),
+			Pages:    scan("/src/app/static/pages/*.html"),
+			JS:       scan("/src/app/static/js/*.js"),
+		}
+		var m Manifest
+		m, err = readManifestAt(manifestFilePath)
+		if err != nil {
+			return err
+		}
+		rep := buildInspection(m, onDisk)
+		var data []byte
+		data, err = json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			return err
+		}
+		out = string(data)
+		return nil
+	})
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	rep := buildInspection(m, onDisk)
-	data, err := json.MarshalIndent(rep, "", "  ")
-	if err != nil {
-		return errResult(err.Error()), nil
-	}
-	return mcp.NewToolResultText(string(data)), nil
+	return mcp.NewToolResultText(out), nil
 }
 func handleExecuteSQL(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, _ := req.Params.Arguments["query"].(string)
 	if query == "" {
 		return errResult("query is required"), nil
 	}
-	// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
-	// timeout so DDL here doesn't collide with the app container's live
-	// connection, and so a fresh db file ends up in WAL mode immediately
-	// rather than waiting for the app to connect first.
-	db, err := sql.Open("sqlite3", sqliteDSN)
+	// DDL joins the workspace lock. Parallel subagents run execute_sql
+	// concurrently by design (see CLAUDE.md § Parallel Builds); each
+	// connection already carries a 5s busy timeout, but that is a retry
+	// against a live clock, not a queue — several simultaneous CREATE
+	// TABLEs can still exhaust it and hand a subagent a SQLITE_BUSY it did
+	// nothing to earn. Serializing DDL turns contention into waiting.
+	var msg string
+	err := withWorkspaceLock(func() error {
+		// Same pragmas as db.Open (src/app/db/db.go): WAL mode and a busy
+		// timeout so DDL here doesn't collide with the app container's live
+		// connection, and so a fresh db file ends up in WAL mode immediately
+		// rather than waiting for the app to connect first.
+		db, openErr := sql.Open("sqlite3", sqliteDSN)
+		if openErr != nil {
+			return openErr
+		}
+		defer db.Close()
+		_, execErr := db.ExecContext(ctx, query)
+		if execErr != nil {
+			return execErr
+		}
+		msg = "SQL executed successfully"
+		return nil
+	})
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	defer db.Close()
-	if _, err := db.ExecContext(ctx, query); err != nil {
-		return errResult(err.Error()), nil
-	}
-	return mcp.NewToolResultText("SQL executed successfully"), nil
+	return mcp.NewToolResultText(msg), nil
 }
 func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
@@ -1211,7 +1244,9 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	updated := strings.Replace(string(content), marker, call, 1)
 	updated += "\n\n" + formCode
 
-	if err := os.WriteFile(targetPath, []byte(updated), 0644); err != nil {
+	// Atomic replace: pages share their JS module with parallel scaffolds'
+	// add_js_form calls, and a torn file here is a module-wide parse error.
+	if err := atomicWriteFile(targetPath, []byte(updated), 0644); err != nil {
 		return errResult(err.Error()), nil
 	}
 	return mcp.NewToolResultText("Form injected into " + targetPath + "\n\n" + runPatternChecks()), nil

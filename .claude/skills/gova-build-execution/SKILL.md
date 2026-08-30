@@ -24,11 +24,42 @@ Execute the plan by dispatching a fresh implementer subagent per task, a task re
    - Dispatch implementer subagent (`implementer-prompt.md`)
    - If it asks questions, answer them and re-dispatch
    - Implementer implements, verifies (restart + logs), commits, self-reviews
-   - Write diff file (`scripts/review-package BASE HEAD`), dispatch task reviewer (`task-reviewer-prompt.md`)
+   - Write diff file (`scripts/review-package BASE SHA`), dispatch task reviewer (`task-reviewer-prompt.md`)
    - If reviewer finds Critical/Important issues, dispatch a fix subagent, then re-review
    - Once spec ✅ and quality approved, mark task complete in todos and the progress ledger
 3. Once all tasks are complete, run a final whole-branch review of the full branch diff against the commit the branch started from — the `code-review` skill in Claude Code, or a `gova-architect` dispatch (or `/review`) in opencode
 4. If the final review finds issues, dispatch one fix subagent with the complete findings list (not one fixer per finding), then hand control back to `/build` to continue to Step 6 (Security Analysis)
+
+## Parallel Waves (max 3 in flight)
+
+Implementation subagents may run concurrently, in **waves of at most 3**.
+Concurrency is safe NOW because the infrastructure serializes the shared
+state — the builder holds a workspace lock across every manifest transaction
+(CLAUDE.md § Parallel Builds), `scripts/restart-app` and `scripts/verify`
+flock restarts, and implementers stage only their own files. That makes
+parallelism correct, not free: SQLite DDL, container restarts, and review
+bandwidth still contend, which is what the cap is for.
+
+**Wave membership — a task may share a wave with another only if ALL hold:**
+- No dependency edge between them: neither consumes what the other produces
+  (checked against the plan's `Interfaces:` blocks)
+- No shared file: their Files lists are disjoint. Two tasks touching the same
+  file (including shared libs like `static/js/lib/api.js`) never share a wave,
+  even with no dependency edge
+
+**Running a wave:** dispatch up to 3, then review each as it completes —
+reviews may overlap the remaining implementers. When the wave's tasks are all
+reviewed clean, run the barrier: `scripts/verify --strict` (full suite, no
+foreign classification — the tree is committed and clean, so it must pass
+untouched). Only then start the next wave.
+
+**Falling back:** repeated foreign-verify failures in a wave mean contention,
+not breakage — drop to 2 (or 1) in flight for the next wave. A single task
+with a dependency edge just runs alone. When in doubt, serialize: a lost
+40% speedup costs less than a debugging session.
+
+**Straight serial is still valid.** Dispatch one implementer at a time and
+review before the next — the waves are an optimization, not a requirement.
 
 ## Pre-Flight Plan Review
 
@@ -69,7 +100,7 @@ Plans specify contracts, not bodies (see `gova-writing-plans` § Specify Contrac
 
 Implementer subagents report one of four statuses. Handle each appropriately:
 
-**DONE:** Generate the review package (`scripts/review-package BASE HEAD`, from this skill's directory — it prints the unique file path it wrote; BASE is the commit you recorded before dispatching the implementer — never `HEAD~1`, which silently drops all but the last commit of a multi-commit task), then dispatch the task reviewer with the printed path.
+**DONE:** Generate the review package (`scripts/review-package BASE SHA`, from this skill's directory — it prints the unique file path it wrote; BASE is the commit you recorded before dispatching the implementer, SHA is the head commit the implementer REPORTED — never `HEAD`, which in a parallel wave may already include a sibling's just-landed commits), then dispatch the task reviewer with the printed path.
 
 **DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., "this file is getting large"), note them and proceed to review.
 
@@ -151,7 +182,9 @@ Conversation memory does not survive compaction. Track progress in a ledger file
 - Start implementation on main without explicit user consent
 - Skip task review, or accept a report missing either verdict (spec compliance AND task quality are both required)
 - Proceed with unfixed issues
-- Dispatch multiple implementation subagents in parallel (conflicts)
+- Exceed 3 implementers in flight, or put two tasks sharing a file (or a dependency edge) in the same wave (see § Parallel Waves)
+- Let an implementer `git add -A` / stage outside its task's Files list during a parallel wave (see implementer-prompt.md)
+- Build a review package from HEAD during a parallel wave — pin it to the implementer's reported SHA
 - Make a subagent read the whole plan file (hand it its task brief — `scripts/task-brief` — instead)
 - Skip scene-setting context (subagent needs to understand where task fits)
 - Ignore subagent questions (answer before letting them proceed)
@@ -159,8 +192,9 @@ Conversation memory does not survive compaction. Track progress in a ledger file
 - Skip review loops (reviewer found issues = implementer fixes = review again)
 - Let implementer self-review replace actual review (both are needed)
 - Tell a reviewer what not to flag, or pre-rate a finding's severity in the dispatch prompt
-- Dispatch a task reviewer without a diff file — generate it first (`scripts/review-package BASE HEAD`)
+- Dispatch a task reviewer without a diff file — generate it first (`scripts/review-package BASE SHA`)
 - Move to next task while the review has open Critical/Important issues
+- Advance to the next wave without the `scripts/verify --strict` barrier passing
 - Re-dispatch a task the progress ledger already marks complete — check the ledger (and `git log`) after any compaction or resume
 
 **If subagent asks questions:**

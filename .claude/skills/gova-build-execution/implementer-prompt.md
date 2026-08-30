@@ -45,9 +45,14 @@ Subagent:
     Once you're clear on requirements:
     1. Call the MCP scaffold tool the task brief specifies
     2. Customize the generated files per the task
-    3. Verify: `docker compose restart app`, check `docker compose logs app`
-       for errors, confirm the page/endpoint behaves as specified, and run
-       `docker compose exec app go test ./...` — all passing?
+    3. Verify: run `scripts/verify <your task's files>` (from the
+       gova-build-execution skill's scripts directory). It serializes the
+       restart behind a lock, restarts the app, waits for readiness, and runs
+       `go test ./...` — a failure naming ONLY files outside your task's list
+       is a sibling mid-edit in a parallel wave; it retries those and passes
+       ADVISORY. A failure naming YOUR files is real: fix it. Then check
+       `docker compose logs app` and confirm the page/endpoint behaves as
+       specified.
     4. Commit your work
     5. Self-review (see below)
     6. Report back
@@ -58,9 +63,34 @@ Subagent:
     It's always OK to pause and clarify. Don't guess or make assumptions.
 
     Verification is: the right MCP tool was called first, the generated
-    files match the task brief, the app runs clean after restart, and
-    `go test ./...` passes — including the tests the scaffold call itself
-    generated for you (see CLAUDE.md § Mandatory Scaffolding Rule).
+    files match the task brief, `scripts/verify` passed on your files,
+    `docker compose logs app` is clean, and the page/endpoint works —
+    including the tests the scaffold call itself generated for you (see
+    CLAUDE.md § Mandatory Scaffolding Rule).
+
+    ## Parallel Build Discipline
+
+    You may have sibling implementers working in the same tree RIGHT NOW
+    (CLAUDE.md § Parallel Builds, max 3 in flight). This changes three things:
+
+    - **Stage only your files.** `git add` exactly the files in your task's
+      Files list — NEVER `git add -A` / `git add .`, which would sweep up a
+      sibling's in-progress edits into your commit. If `git add` fails with
+      an index.lock error, wait a few seconds and retry; a sibling is
+      committing.
+    - **Never write outside your task's Files list.** api.json,
+      routes_gen.go, pages_gen.go are updated by the MCP tools behind their
+      own lock — do not hand-edit them to "fix" something you see there; if
+      they look wrong, say so in your report.
+    - **Use the shared scripts, not raw commands.** Restart via
+      `scripts/restart-app` (it flocks: if a sibling holds it, you wait
+      instead of colliding). Tests via `scripts/verify`. A raw
+      `docker compose restart app` can interrupt a sibling's in-flight
+      verify and read as ITS feature being broken.
+
+    Your commit is your identity: the controller builds YOUR review from the
+    SHA you report, so report the exact head SHA (`git rev-parse HEAD`) after
+    your final commit.
 
     ## Code Organization
 
@@ -147,8 +177,10 @@ Subagent:
     Then report back with ONLY (under 15 lines — the detail lives in the
     report file):
     - **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-    - Commits created (short SHA + subject)
-    - One-line verification summary (e.g. "restarted clean, /projects loads, create form works")
+    - Commits created (short SHA + subject), plus the exact head SHA
+      (`git rev-parse HEAD`) — the controller builds your review package from
+      it; a wrong SHA pairs your diff with a sibling's commits
+    - One-line verification summary (e.g. "verify passed on my files, /projects loads, create form works")
     - Your concerns, if any
     - The report file path
 

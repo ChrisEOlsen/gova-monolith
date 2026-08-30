@@ -210,11 +210,11 @@ func writeManifestAt(path string, m *Manifest, now time.Time) error {
 	// rather than being set once at scaffold time and drifting.
 	m.Template = Template{Version: templateVersion(), Fingerprint: templateFingerprint()}
 	m.GeneratedAt = now.UTC().Format(time.RFC3339)
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
+	// Atomic replace: a reader (inspect_app, the manifest hash endpoint, a
+	// human) either sees the previous complete file or this one — never a
+	// truncation from a crash mid-write, which used to surface as a hard
+	// "api.json is corrupt" error.
+	return atomicWriteJSON(path, m)
 }
 
 // callExpr builds the handler constructor call from the endpoint's deps, in
@@ -392,6 +392,10 @@ func parseBodySchemaArg(raw string) (*BodySchema, error) {
 // validateRefsAt fails if any field references a model not yet in the manifest.
 // A dangling reference is a stated-fact violation — the parent must be
 // scaffolded before its child.
+//
+// Callers that scaffold register this check inside their updateManifestAt
+// transaction, so the parent registered by a concurrent call a moment earlier
+// is already visible here and a ref cannot dangle behind the lock's back.
 func validateRefsAt(apiPath string, fields []Field) error {
 	need := false
 	for _, f := range fields {
@@ -460,7 +464,22 @@ func resourceResponse(m Model, kind string) *BodySchema {
 // every upsert succeeded, write api.json and regenerate routes_gen.go and
 // pages_gen.go. A conflict — on an endpoint or a page — returns before any file
 // is touched.
+//
+// The whole transaction runs under the workspace locks (see lock.go). Without
+// that, two concurrent tool calls both read the same base manifest, both
+// upsert their own entries, and the second write silently erases the first's
+// registrations — the classic lost update that no same-key conflict check can
+// see, because each writer's snapshot is stale by the time it writes.
 func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint, pages []Page) error {
+	var err error
+	withWorkspaceLock(func() error {
+		err = updateManifestLocked(apiPath, handlersDir, now, models, endpoints, pages)
+		return nil
+	})
+	return err
+}
+
+func updateManifestLocked(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint, pages []Page) error {
 	m, err := readManifestAt(apiPath)
 	if err != nil {
 		return err

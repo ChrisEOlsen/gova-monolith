@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# restart-app — serialize `docker compose restart app` across parallel
+# subagents, then wait until the server actually answers.
+#
+# WHY THIS EXISTS: three implementers in flight share one app container. Two
+# restarting at once is at best wasted work; worse, a subagent's endpoint
+# probe that lands during a sibling's restart fails with a connection error
+# that looks exactly like its own feature being broken. Holding an flock for
+# the restart AND the readiness wait means a verify that starts after this
+# returns never races a restart that starts after it.
+#
+# Usage: restart-app
+# Env:   GOVA_LOCK_TIMEOUT — seconds to wait for a sibling's restart (default 120)
+# Exit:  0 ready | 75 lock timed out (EX_TEMPFAIL — retry) | other: real failure
+set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/lib-lock"
+
+gova_with_restart_lock bash -c '
+  set -euo pipefail
+  docker compose restart app >/dev/null
+  # Readiness: the app listens on ${APP_PORT}. Poll until curl gets ANY HTTP
+  # response (200, 404, 302 — the status does not matter; a reset does).
+  port=$(grep -E "^APP_PORT=" .env 2>/dev/null | cut -d= -f2)
+  port=${port:-8080}
+  for i in $(seq 1 60); do
+    if curl -s -o /dev/null --max-time 2 "http://localhost:${port}/api/v1/_version"; then
+      exit 0
+    fi
+    sleep 0.5
+  done
+  echo "app did not answer within 30s of restart" >&2
+  exit 1
+'
+rc=$?
+if [ $rc -eq 0 ]; then
+  echo "app restarted and answering"
+fi
+exit $rc

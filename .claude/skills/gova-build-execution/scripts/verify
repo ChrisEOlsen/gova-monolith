@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# verify — the ONE verification path a parallel-build implementer uses, and
+# the wave barrier's authoritative check.
+#
+# WHY THIS EXISTS: three implementers in flight share one working tree. While
+# a sibling is mid-customization, the Go package is often intentionally
+# non-compiling — a plain `go test ./...` then fails on FILES NOBODY IN THIS
+# TASK TOUCHED, which reads like a broken feature but is neighbor noise. This
+# script makes that distinction mechanical:
+#
+#   1. serialize restart+test behind the restart flock (no verify runs during
+#      a container restart — that failure mode is pure noise),
+#   2. classify a test failure as FOREIGN (mentions only files outside this
+#      task's list and no files from it) — advisory, retried up to
+#      GOVA_VERIFY_RETRIES times, then reported but non-fatal with a distinct
+#      marker,
+#   3. any failure naming one of THIS task's files (or a foreign failure that
+#      persists past the retries) is fatal — a real gate.
+#
+# At the wave barrier (all tasks in the wave reviewed and committed), the
+# controller runs `verify --strict` with no task file list: the tree is clean,
+# the full suite must pass untouched, foreign classification is off.
+#
+# Usage:
+#   verify [FILE...]          task-scoped: FILE args are this task's files.
+#   verify --strict           barrier: full suite must pass.
+# Env:  GOVA_LOCK_TIMEOUT (restart wait, default 120)
+#       GOVA_VERIFY_RETRIES (foreign-failure retries, default 2)
+# Exit: 0 pass | 1 real failure | 75 lock timeout (retry)
+set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/lib-lock"
+
+STRICT=0
+if [ "${1:-}" = "--strict" ]; then
+  STRICT=1
+  shift
+fi
+
+task_files=("$@")
+ws=$("$(cd "$(dirname "$0")" && pwd)/sdd-workspace")
+# Per-invocation log file: /tmp is shared across subagents, and two verifies
+# running concurrently must not write into each other's failure logs.
+verify_log="$ws/verify-$$.log"
+
+# --- helpers ----------------------------------------------------------------
+
+# failure mentions a task file -> real. Mentions only foreign paths ->
+# foreign. Mentions nothing recognizable -> foreign (unattributable noise
+# must not fail a sibling-free restart).
+classify() { # classify <log-file> -> echoes real|foreign
+  local log=$1 f
+  if [ ${#task_files[@]} -gt 0 ]; then
+    for f in "${task_files[@]}"; do
+      if [ -n "$f" ] && grep -q -- "$f" "$log"; then
+        echo real; return
+      fi
+    done
+  fi
+  echo foreign
+}
+
+run_tests() { # run_tests <log-file>: docker compose exec test -> exit code
+  local log=$1
+  docker compose exec -T app go test ./... >"$log" 2>&1
+}
+
+# --- the serialized section --------------------------------------------------
+
+lockpath=$(gova_lock_path)
+timeout=$(gova_timeout)
+retries=${GOVA_VERIFY_RETRIES:-2}
+
+python3 - "$lockpath" "$timeout" -- bash -c '
+  set -euo pipefail
+  docker compose restart app >/dev/null
+  port=$(grep -E "^APP_PORT=" .env 2>/dev/null | cut -d= -f2)
+  port=${port:-8080}
+  for i in $(seq 1 60); do
+    if curl -s -o /dev/null --max-time 2 "http://localhost:${port}/api/v1/_version"; then
+      exit 0
+    fi
+    sleep 0.5
+  done
+  echo "app did not answer within 30s of restart" >&2
+  exit 1
+'
+rc=$?
+if [ $rc -eq 75 ]; then
+  echo "restart lock busy — retry verify" >&2
+  exit 75
+fi
+if [ $rc -ne 0 ]; then
+  echo "restart failed" >&2
+  exit 1
+fi
+
+# --- strict mode: the gate ----------------------------------------------------
+
+if [ $STRICT -eq 1 ]; then
+  if run_tests "$verify_log"; then
+    echo "strict verify passed (full suite, no foreign classification)"
+    exit 0
+  fi
+  echo "strict verify FAILED — full suite must pass at a barrier:" >&2
+  tail -40 "$verify_log" >&2
+  exit 1
+fi
+
+# --- task mode: classify failures ----------------------------------------------
+
+attempt=0
+while :; do
+  if run_tests "$verify_log"; then
+    echo "verify passed (go test ./..., task-scoped classification)"
+    exit 0
+  fi
+  verdict=$(classify "$verify_log")
+  if [ "$verdict" = real ]; then
+    echo "verify FAILED — failure names a file in this task:" >&2
+    tail -40 "$verify_log" >&2
+    exit 1
+  fi
+  # foreign: a sibling's in-progress edit. Retry while the window passes;
+  # a sibling that finished its edit clears the tree on its own.
+  attempt=$((attempt + 1))
+  if [ $attempt -le $retries ]; then
+    echo "foreign failure (sibling mid-edit) — retry $attempt/$retries" >&2
+    sleep 10
+    continue
+  fi
+  echo "FOREIGN-ONLY FAILURES after $retries retries — pass is ADVISORY:" >&2
+  tail -30 "$verify_log" >&2
+  echo "verify result: ADVISORY_PASS (foreign failures only; re-run verify --strict at the barrier)" >&2
+  exit 0
+done

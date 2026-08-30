@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# lib-lock — flock helpers shared by the parallel-build scripts.
+#
+# Parallel implementer subagents (see CLAUDE.md § Parallel Builds: max 3 in
+# flight) share one working tree and one app container. The builder serializes
+# its own wsurface writes (api.json, *_gen.go — flocks /src/.gova-lock), and
+# these helpers give the shell side the same discipline for the two things the
+# builder cannot see: `docker compose restart app` (which interrupts every
+# subagent mid-request) and container readiness after one.
+#
+# The lock file lives in .gova-build/ — scratch space that already exists for
+# build artifacts, is git-ignored, and is on the same filesystem as the repo.
+# Sourcing this file defines functions; it prints nothing on its own.
+
+# govtry_get_lock — acquire an exclusive flock on GOVA_BUILD_LOCK, waiting up
+# to GOVA_LOCK_TIMEOUT seconds (default 120). Prints nothing on success; on
+# timeout non-zero exit.
+gova_lock_path() {
+  local root
+  root=$(git rev-parse --show-toplevel)
+  mkdir -p "$root/.gova-build"
+  printf '%s\n' "$root/.gova-build/restart.lock"
+}
+
+gova_timeout() { printf '%s\n' "${GOVA_LOCK_TIMEOUT:-120}"; }
+
+gova_with_restart_lock() {
+  local lockpath timeout
+  lockpath=$(gova_lock_path)
+  timeout=$(gova_timeout)
+  python3 - "$lockpath" "$timeout" "$@" <<'PYEOF'
+import fcntl, os, subprocess, sys
+
+lockpath, timeout = sys.argv[1], int(sys.argv[2])
+cmd = sys.argv[3:]
+f = open(lockpath, "a+")
+try:
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    # Someone else is restarting — wait politely rather than fail, then retry
+    # the quick non-blocking take so fairness stays simple (not strictly FIFO,
+    # but bounded waiters get through).
+    deadline = os.times()[4] + timeout
+    import time
+    held = True
+    while held and os.times()[4] < deadline:
+        time.sleep(0.5)
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = False
+        except BlockingIOError:
+            held = True
+    if held:
+        sys.stderr.write(f"restart lock held by another subagent for {timeout}s\n")
+        sys.exit(75)  # EX_TEMPFAIL — caller may retry
+try:
+    os.execvp(cmd[0], cmd)
+finally:
+    pass
+PYEOF
+}

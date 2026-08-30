@@ -57,6 +57,13 @@ Before defining tasks, map out which files will be created or modified and what 
 
 This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
 
+**Keep tasks file-disjoint** — the executor runs up to 3 implementers in
+parallel waves (see `gova-build-execution` § Parallel Waves), and two tasks
+that modify the same file (a shared lib, a common layout) may never share a
+wave even with no dependency edge. If two features genuinely need the same
+file touched, either fold them into one task or sequence them into different
+waves with an explicit note.
+
 ## Task Right-Sizing
 
 A task is the smallest unit that carries its own verification cycle and is worth a fresh reviewer's gate. One feature (one `execute_sql` + one `scaffold_*` call + its customization) is usually one task. Fold setup, migration, and customization into the task whose deliverable needs them; split only where a reviewer could meaningfully reject one task while approving its neighbor. Each task ends with an independently verifiable deliverable (page loads, endpoint returns the right shape).
@@ -150,7 +157,7 @@ Check: `docker compose logs app` shows no errors; page loads at `/feature_name`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A
+git add <the exact files this task created or modified>
 git commit -m "feat: add feature_name"
 ```
 ````
