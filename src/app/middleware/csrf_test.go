@@ -171,3 +171,43 @@ func TestCSRF_MintedCookieIsPersistent(t *testing.T) {
 	}
 	t.Fatal("GET did not mint a csrf_token cookie")
 }
+
+// The bearer exemption is Pinned so a future edit cannot silently drop the
+// mobile path into CSRF scope and 403 every native write: login_token (the
+// issuing call, by path) and any Authorization: Bearer request pass even
+// carrying cookies-session headers a browser would have attached. If you
+// change this, reason through it in isBearerRequest's comment — the whole
+// point of the named helper is that there is exactly one place to do that.
+func TestCSRF_BearerExemptionSurivesAmbientCookies(t *testing.T) {
+	// A request with a full ambient-cookie set, but a Bearer header: exempt.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/.anything", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "abc"})
+	req.Header.Set("X-CSRF-Token", "wrong") // would 403 without the exemption
+	req.Header.Set("Authorization", "Bearer tok")
+	CSRF(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bearer request with ambient cookies: want 200 (exempt), got %d", rec.Code)
+	}
+
+	// login_token by PATH, with the same cookies and no header at all.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", nil)
+	req2.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
+	CSRF(okHandler()).ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("login_token with session cookie: want 200 (path-exempt), got %d", rec2.Code)
+	}
+
+	// ...and the same path WITHOUT the exemption's conditions — a wrong-path
+	// cookie bearing request — still verifies. The exemption must not leak
+	// beyond its two named cases.
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+	req3.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
+	CSRF(okHandler()).ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusForbidden {
+		t.Fatalf("login (not exempt) with session cookie and no token: want 403, got %d", rec3.Code)
+	}
+}

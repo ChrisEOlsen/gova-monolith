@@ -1016,6 +1016,10 @@ func authEndpoints() []Endpoint {
 		{Method: "POST", Path: "/api/v1/auth/login", Handler: "LoginPOST", Deps: rwc, Kind: "auth_login"},
 		{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST", Deps: []string{}, Kind: "auth_logout"},
 		{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET", Deps: rwc, Auth: true, Kind: "auth_me"},
+		// Server-side revocation: the epoch bump retires every cookie
+		// issued before it, on every device — the half LogoutPOST cannot
+		// reach. Uses rwc: it reads the current epoch through the model.
+		{Method: "POST", Path: "/api/v1/auth/logout_all", Handler: "LogoutAllPOST", Deps: rwc, Auth: true, Kind: "auth_logout_all"},
 		{Method: "POST", Path: "/api/v1/auth/login_token", Handler: "MobileLoginPOST", Deps: rwc, Kind: "mobile_login"},
 		// logout_token takes both handles because it goes through
 		// models.MobileTokenModel, whose constructor owns the read side too —
@@ -1096,6 +1100,11 @@ CREATE TABLE IF NOT EXISTS users (
 	name TEXT NOT NULL,
 	email TEXT NOT NULL UNIQUE,
 	password_hash TEXT NOT NULL,
+	-- Server-side session revocation: every minted cookie carries the
+	-- user's session_epoch at issue time; a bump retires every cookie
+	-- issued before it. NULL/absent reads as 0 (no revocation in force),
+	-- so rows from before this column existed keep working.
+	session_epoch INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS rate_limits (

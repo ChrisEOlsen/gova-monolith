@@ -496,10 +496,10 @@ func TestResourceEndpoints_Schemas(t *testing.T) {
 	}
 }
 
-func TestAuthEndpoints_SixWithKinds(t *testing.T) {
+func TestAuthEndpoints_SevenWithKinds(t *testing.T) {
 	eps := authEndpoints()
-	if len(eps) != 6 {
-		t.Fatalf("got %d endpoints, want 6", len(eps))
+	if len(eps) != 7 {
+		t.Fatalf("got %d endpoints, want 7", len(eps))
 	}
 	type want struct {
 		handler string
@@ -511,6 +511,7 @@ func TestAuthEndpoints_SixWithKinds(t *testing.T) {
 		"POST /api/v1/auth/login":          {"LoginPOST", "auth_login", false, 3},
 		"POST /api/v1/auth/logout":         {"LogoutPOST", "auth_logout", false, 0},
 		"GET /api/v1/auth/me":              {"MeGET", "auth_me", true, 3},
+		"POST /api/v1/auth/logout_all":     {"LogoutAllPOST", "auth_logout_all", true, 3},
 		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false, 3},
 		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false, 2},
 		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false, 3},

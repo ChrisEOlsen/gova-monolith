@@ -46,19 +46,32 @@ func isSafeMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
+// isBearerRequest reports whether a request authenticated (or is
+// authenticating) with a bearer token, which CSRF never applies to: such a
+// client carries no ambient cookie for this origin, so a forged cross-site
+// request has nothing to replay. Named rather than inlined because it is the
+// shared definition of "this request is not in the browser threat model" for
+// BOTH halves of the exemption — the middleware's skip and the route-level
+// test that pins it. A future token scheme that ALSO carries a cookie must
+// land here first; a single predicate is one thing to update, and this
+// comment is where its CSRF consequences get reasoned through.
+func isBearerRequest(r *http.Request) bool {
+	// login_token is exempted by path, not header: it is the request that
+	// ISSUES the token, so it cannot carry one yet. A native app calling it
+	// directly was never reachable by a cross-site forgery in the first
+	// place.
+	if r.URL.Path == "/api/v1/auth/login_token" {
+		return true
+	}
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
 func CSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Bearer-token requests (mobile clients) carry no cookies for this
 		// origin, so a forged cross-site request can't replay them the way
 		// it can a session cookie — CSRF doesn't apply to them.
-		//
-		// login_token is exempted by path for the same reason even though
-		// it can't carry a Bearer header yet — it's the request that issues
-		// the token, so there's nothing to attach. CSRF's threat model is a
-		// browser auto-attaching credentials to a forged cross-site request;
-		// a native app calling this endpoint directly was never reachable
-		// that way in the first place.
-		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || r.URL.Path == "/api/v1/auth/login_token" {
+		if isBearerRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

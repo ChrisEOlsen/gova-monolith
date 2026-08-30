@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ CREATE TABLE users (
 	name TEXT NOT NULL,
 	email TEXT NOT NULL UNIQUE,
 	password_hash TEXT NOT NULL,
+	session_epoch INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE rate_limits (
@@ -197,5 +199,107 @@ func TestLoginPOST_CSRFRejectsMismatchedToken(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// TestLogoutAllPOST_RetiresEarlierSessions is the server-side revocation
+// contract: the epoch bump visibly moves the column, so every cookie minted
+// before the bump now fails Auth's epoch check. The middleware-level
+// rejection property itself is proven in middleware/auth_test.go; what this
+// adds is the wiring — LogoutAllPOST drives the real users table through the
+// generated model, and reports 401 without a session rather than bumping a
+// stranger's epoch.
+func TestLogoutAllPOST_RetiresEarlierSessions(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	uid, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := userModel.BumpSessionEpoch(uid); err != nil {
+		t.Fatalf("bump: %v", err)
+	}
+	current := userModel.EpochLookup(nil, uid)
+	if current != 1 {
+		t.Fatalf("epoch after one bump: got %d, want 1", current)
+	}
+
+	// Requires a session: no uid -> 401, no bump.
+	unauth := LogoutAllPOST(testDB.Read, testDB.Write, appCache)
+	anon := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout_all", nil)
+	anonRec := httptest.NewRecorder()
+	unauth(anonRec, anon)
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("logout_all without a session: want 401, got %d", anonRec.Code)
+	}
+
+	// With uid in context (the shape RequireAuth leaves behind), the bump
+	// goes through and the epoch moves again.
+	handler := middleware.RequireAuth(LogoutAllPOST(testDB.Read, testDB.Write, appCache))
+	authed := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout_all", nil)
+	ctx := context.WithValue(anon.Context(), middleware.UserIDKey, uid)
+	authed = authed.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authed)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout_all with a session: want 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if after := userModel.EpochLookup(nil, uid); after != 2 {
+		t.Fatalf("epoch after logout_all: got %d, want 2 — the bump did not reach the column", after)
+	}
+}
+
+// TestLoginPOST_SessionCarriesCurrentEpoch proves the cookie minted at login
+// carries the user's CURRENT epoch — the property that keeps a revocation
+// from locking out the legitimate re-login that follows it.
+func TestLoginPOST_SessionCarriesCurrentEpoch(t *testing.T) {
+	testDB := db.OpenTest(t, authTestSchema)
+	appCache := cache.New()
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+	uid, err := userModel.Create("Ada", "ada@example.com", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := userModel.BumpSessionEpoch(uid); err != nil {
+		t.Fatalf("pre-login bump: %v", err)
+	}
+
+	middleware.EpochLookup = func(_ *http.Request, id int64) int64 { return userModel.EpochLookup(nil, id) }
+	t.Cleanup(func() { middleware.EpochLookup = nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", loginBody("ada@example.com", "correct-horse-battery-staple"))
+	rec := httptest.NewRecorder()
+	LoginPOST(testDB.Read, testDB.Write, appCache)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: want 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Extract the minted cookie and replay it through Auth: it must pass the
+	// epoch check (carrying epoch 1 vs lookup 1), not the "expired"
+	// (epoch-behind) branch. If the mint used the pre-bump epoch (0), the
+	// replay would be rejected and this test turns red.
+	var cookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == middleware.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login minted no session cookie")
+	}
+	wrapped := middleware.Auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if middleware.UserID(r) == uid {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	replay := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	replay.AddCookie(cookie)
+	replayRec := httptest.NewRecorder()
+	wrapped.ServeHTTP(replayRec, replay)
+	if replayRec.Code != http.StatusOK {
+		t.Fatalf("freshly minted session failed its own epoch check (mint epoch %d?): got %d", userModel.EpochLookup(nil, uid), replayRec.Code)
 	}
 }

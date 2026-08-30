@@ -81,7 +81,8 @@ func RegisterPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFu
 			return
 		}
 
-		middleware.SetSession(w, id, 24*time.Hour)
+		middleware.SetSessionWithEpoch(w, id,
+			userModel.EpochLookup(nil, id), 24*time.Hour)
 		jsonOK(w, map[string]any{"id": id})
 	}
 }

@@ -148,3 +148,44 @@ func TestClientIP_LoopbackIsTrusted(t *testing.T) {
 		t.Fatalf("loopback proxy: got %q, want 198.51.100.1", got)
 	}
 }
+
+// ─── THE /64 AGGREGATE ───────────────────────────────────────────────────────
+//
+// The register bucket keys on a /64, not an address: an IPv6 attacker rotating
+// interface identifiers inside one routed block must land in ONE bucket, or
+// the 5-per-15-min register limit guards one address out of effectively
+// unlimited addresses and throttles nothing at scale.
+
+func TestAggregateIPv6Prefix_CollapsesARoutedBlockToItsSlash64(t *testing.T) {
+	a := aggregateIPv6Prefix("2001:db8:1122:3344:aaaa:bbbb:cccc:1")
+	b := aggregateIPv6Prefix("2001:db8:1122:3344:ffff:0000:1111:9999")
+	if a != b {
+		t.Fatalf("two addresses in one /64 produced two buckets: %q vs %q", a, b)
+	}
+	if a != "2001:db8:1122:3344::" {
+		t.Fatalf("aggregate: got %q, want 2001:db8:1122:3344::", a)
+	}
+}
+
+func TestAggregateIPv6Prefix_IPv4PassesThrough(t *testing.T) {
+	if got := aggregateIPv6Prefix("203.0.113.7"); got != "203.0.113.7" {
+		t.Fatalf("IPv4 must key per-address (scarcity already aggregates): got %q", got)
+	}
+}
+
+func TestAggregateIPv6Prefix_GarbagePassesThrough(t *testing.T) {
+	// An unparseable value passes through so the limiter never mints an
+	// unpredictable key out of garbage — the same rule clientIP applies.
+	const junk = "not-an-ip"
+	if got := aggregateIPv6Prefix(junk); got != junk {
+		t.Fatalf("garbage: got %q, want %q", got, junk)
+	}
+}
+
+func TestAggregateIPv6Prefix_Distinct64sStayDistinct(t *testing.T) {
+	a := aggregateIPv6Prefix("2001:db8:1122:3344::1")
+	b := aggregateIPv6Prefix("2001:db8:1122:3350::1")
+	if a == b {
+		t.Fatal("distinct routed /64s collapsed into one bucket — over-aggregation punishes neighbors")
+	}
+}

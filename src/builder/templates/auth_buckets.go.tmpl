@@ -1,5 +1,10 @@
 package handlers
 
+import (
+	"net"
+	"strings"
+)
+
 // ═════════════════════════════════════════════════════════════════════════════
 // RATE-LIMIT BUCKET KEYS FOR THE TWO LOGIN ENDPOINTS.
 //
@@ -87,4 +92,26 @@ func loginTokenBucket(ip string) string { return "login_token:" + ip }
 // thing being limited is how fast one address can create accounts and probe
 // addresses, and a successful signup is exactly that. Nothing clears this
 // bucket; it decays on its own after the window, like every other bucket.
-func registerBucket(ip string) string { return "register:" + ip }
+func registerBucket(ip string) string { return "register:" + aggregateIPv6Prefix(ip) }
+
+// aggregateIPv6Prefix widens an IPv6 address to its /64 so every address one
+// operator routes as a block shares one registration bucket. Without this,
+// the register key is per-address — and IPv6 makes addresses effectively
+// free: an attacker rotating interface identifiers inside a single routed
+// /64 gets a fresh 5-per-15-min registration budget per address, so the
+// 409 email-enumeration oracle (and account-creation itself) is throttled by
+// nothing at scale. /64 is the smallest block an ISP routes as a unit, so
+// distinct customers still get distinct buckets. IPv4 passes through
+// unchanged — its scarcity already makes per-address meaningful.
+//
+// Masking rather than string surgery so allocation units BELOW /64 (/48,
+// /56, /62) collapse into their /64 instead of splitting off; an
+// unparseable value passes through so the limiter never mints an
+// unpredictable key out of garbage.
+func aggregateIPv6Prefix(ip string) string {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.To16().Mask(net.CIDRMask(64, 128)).String()
+}

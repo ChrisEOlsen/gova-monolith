@@ -40,6 +40,11 @@ func main() {
 	r.Use(middleware.Security)
 	r.Use(middleware.CSRF)
 	r.Use(middleware.Auth)
+	// Session revocation is wired by scaffold output: the generated auth
+	// file's init() installs middleware.EpochLookup against the users table
+	// (see templates/auth_handler.go.tmpl). An app scaffolded without auth
+	// has neither sessions to revoke nor a lookup — EpochLookup stays nil
+	// and the epoch check passes everything, the pre-epoch behavior.
 
 	// Fallbacks for a path that matched no route, and for a method that is not
 	// registered on a path that did. chi's defaults answer in plain text, which

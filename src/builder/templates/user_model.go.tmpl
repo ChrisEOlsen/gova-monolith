@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -183,5 +184,43 @@ func (m *UserModel) RecordFailedAttempt(ip string) error {
 // indistinguishable from a working one.
 func (m *UserModel) ClearAttempts(ip string) error {
 	_, err := m.writeDB.Exec("DELETE FROM rate_limits WHERE ip = ?", ip)
+	return err
+}
+
+// EpochLookup reads a user's current session_epoch. The signature matches
+// middleware.EpochLookup (r is unused — the epoch is per-user, not
+// per-request — but kept for parity so the generated handler can assign the
+// method straight to the middleware var).
+//
+// Unknown user or unmigrated table reads as 0: the middleware treats that
+// as "no revocation in force" — pre-epoch rows and pre-epoch sessions
+// behave exactly as they did before this column existed.
+func (m *UserModel) EpochLookup(_ *http.Request, userID int64) int64 {
+	var epoch sql.NullInt64
+	if err := m.readDB.QueryRow(
+		"SELECT session_epoch FROM users WHERE id = ?", userID,
+	).Scan(&epoch); err != nil || !epoch.Valid {
+		return 0
+	}
+	return epoch.Int64
+}
+
+// BumpSessionEpoch is the server-side half of session revocation.
+//
+// Every minted session cookie carries the user's session_epoch at issue
+// time; middleware.Auth rejects any cookie whose epoch is behind the
+// column's current value. Bumping the column therefore retires EVERY cookie
+// issued before the bump — on every device, which is what LogoutPOST's
+// cookie deletion cannot do.
+//
+// Callers: password change (retire old sessions), LogoutAllPOST, and any
+// compromise response. The next SetSessionWithEpoch at login reads the
+// post-bump value, so the legitimate re-login that follows a bump is born
+// current and is not itself revoked.
+func (m *UserModel) BumpSessionEpoch(userID int64) error {
+	_, err := m.writeDB.Exec(
+		"UPDATE users SET session_epoch = COALESCE(session_epoch, 0) + 1 WHERE id = ?",
+		userID,
+	)
 	return err
 }
