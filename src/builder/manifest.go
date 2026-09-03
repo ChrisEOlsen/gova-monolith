@@ -353,16 +353,38 @@ func regeneratePagesAt(handlersDir string, m Manifest) error {
 // fieldsToModel converts Build 1 Field records (carrying schema-derived
 // Nullable) into a manifest Model, adding the implicit id (first) and
 // created_at (last) columns every generated table has.
+//
+// CREDENTIAL COLUMNS ARE OMITTED, not downgraded. api.json is the source of
+// truth for the SERVED SURFACE — what actually crosses the wire — and a
+// credential column never does: model.go.tmpl tags it `json:"-"`, GetPage does
+// not select it, and it is absent from the sort/filter whitelist. Listing it
+// here as a non-nullable `string` (which is what this used to do, flattening
+// the type) told a client generator to emit a REQUIRED field that appears in no
+// response, which a strict decoder rejects outright — the same failure class
+// the timestamp rule exists to prevent, and one inspect_app cannot see because
+// it never compares struct tags to the manifest.
+//
+// Nothing is lost that was not already lost: the type was flattened to `string`
+// anyway, so the manifest never described the column honestly. Recording it as
+// explicitly non-serialized was the alternative and is worse by default — every
+// existing consumer that does not know the new flag keeps emitting the required
+// field, so the fix would only reach clients that opted into it.
+//
+// The manifest is not the schema. `PRAGMA table_info` is, and applySchema reads
+// it on every scaffold; a column being absent here does not make it invisible
+// to the generator.
 func fieldsToModel(name, table string, fields []Field) Model {
 	out := make([]ModelField, 0, len(fields)+2)
 	out = append(out, ModelField{Name: "id", Type: "int", Nullable: false})
 	for _, f := range fields {
-		typ := f.Type
-		if typ == "password" {
-			typ = "string"
+		// isCredentialColumn, not isSecret: model.go.tmpl tags a
+		// credential-NAMED column `json:"-"` too, and the manifest must
+		// describe the same list the struct serializes.
+		if isCredentialColumn(f) {
+			continue
 		}
 		out = append(out, ModelField{
-			Name: f.Name, Type: typ, Nullable: f.Nullable,
+			Name: f.Name, Type: f.Type, Nullable: f.Nullable,
 			Format: f.Format, References: f.Ref,
 		})
 	}

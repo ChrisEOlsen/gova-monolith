@@ -62,61 +62,56 @@ func LoginPOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc 
 		}
 		email := strings.TrimSpace(body.Email)
 		password := body.Password
-		// The COOKIE login's own bucket. Not a bare clientIP(r): ClearAttempts
-		// deletes by key, so sharing a key with the bearer login lets a success
-		// on either endpoint erase the other's failures. See auth_buckets.go.
-		ip := loginBucket(clientIP(r))
+		// TWO BUCKETS, AND BOTH ARE LOAD BEARING.
+		//
+		// ipBucket is the COOKIE login's own address bucket — not a bare
+		// clientIP(r), because ClearAttempts deletes by key and sharing a key
+		// with the bearer login lets a success on either endpoint erase the
+		// other's failures.
+		//
+		// accountBucket meters the ACCOUNT BEING ATTACKED, and it is what makes
+		// the address bucket's clear-on-success safe: without it, four wrong
+		// guesses at a victim followed by one correct login to an account the
+		// attacker holds resets the counter, forever. It is derived from the
+		// SUBMITTED address before any lookup, so it is not an existence
+		// oracle. See auth_buckets.go.
+		ipBucket := loginBucket(clientIP(r))
+		accountBucket := loginEmailBucket(email)
 
 		userModel := models.NewUserModel(readDB, writeDB, appCache)
 
-		// A READ FAILURE IS A 500, NOT A 429.
-		//
-		// `err != nil || locked` collapsed the two into one answer, so a broken
-		// database told every caller "too many attempts, try again in 15
-		// minutes" — a specific, false, and self-limiting-sounding claim that
-		// sends an operator to look at the rate limiter instead of at the
-		// outage. Failing closed is right; lying about why is not.
-		locked, err := userModel.IsRateLimited(ip)
-		if err != nil {
-			log.Printf("handlers: rate-limit read failed for %q: %v", ip, err)
-			jsonError(w, "Something went wrong. Try again.", http.StatusInternalServerError)
-			return
-		}
-		if locked {
-			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
+		// Checked BEFORE the user lookup, so a locked-out answer costs the same
+		// and says the same whether or not the address has an account. The
+		// 500-vs-429 split for a broken database lives in loginLimited.
+		if loginLimited(w, userModel, ipBucket, accountBucket) {
 			return
 		}
 
 		user, err := userModel.FindByEmail(email)
 		if err != nil {
 			bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
-			// The limiter's write error is NOT ignorable: a failure here means
-			// the attempt was never counted, so the counter never trips and the
-			// control is silently off. There is nothing useful to tell the
-			// caller — the answer is the same 401 either way — but an operator
-			// must be able to see it.
-			if err := userModel.RecordFailedAttempt(ip); err != nil {
-				log.Printf("handlers: rate limiter failed to record an attempt for %q: %v", ip, err)
-			}
+			// BOTH buckets are counted, the account one included. Counting only
+			// attempts against accounts that exist would make "did a 429 ever
+			// arrive" a membership test — the enumeration oracle dummyHash is
+			// here to prevent, arriving through the limiter instead.
+			recordLoginFailure(userModel, ipBucket, accountBucket)
 			jsonError(w, "Invalid email or password.", http.StatusUnauthorized)
 			return
 		}
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
-			// The limiter's write error is NOT ignorable: a failure here means
-			// the attempt was never counted, so the counter never trips and the
-			// control is silently off. There is nothing useful to tell the
-			// caller — the answer is the same 401 either way — but an operator
-			// must be able to see it.
-			if err := userModel.RecordFailedAttempt(ip); err != nil {
-				log.Printf("handlers: rate limiter failed to record an attempt for %q: %v", ip, err)
-			}
+			// BOTH buckets are counted, the account one included. Counting only
+			// attempts against accounts that exist would make "did a 429 ever
+			// arrive" a membership test — the enumeration oracle dummyHash is
+			// here to prevent, arriving through the limiter instead.
+			recordLoginFailure(userModel, ipBucket, accountBucket)
 			jsonError(w, "Invalid email or password.", http.StatusUnauthorized)
 			return
 		}
 
-		if err := userModel.ClearAttempts(ip); err != nil {
-			log.Printf("handlers: rate limiter failed to clear %q: %v", ip, err)
-		}
+		// Cleared: the caller's address, and the account that has just proved it
+		// holds this password. Never a bucket belonging to any other account —
+		// that is the whole point of the second key.
+		clearLoginAttempts(userModel, ipBucket, accountBucket)
 		// Mint the session bound to the user's CURRENT epoch, not the one
 		// captured when the user row was read. If a revocation happened
 		// between the FindByEmail above and here (a second tab bumping on

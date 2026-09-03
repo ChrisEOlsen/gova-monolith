@@ -162,6 +162,26 @@ func (m *UserModel) IsRateLimited(ip string) (bool, error) {
 // it for. Every review that flags "the handler ignores the error" is looking at
 // the wrong layer: with no return value the handler HAS no error to check.
 func (m *UserModel) RecordFailedAttempt(ip string) error {
+	return m.RecordFailedAttemptWithLimit(ip, DefaultRateLimitAttempts)
+}
+
+// DefaultRateLimitAttempts is the budget RecordFailedAttempt uses — the
+// per-address one, and the only one that existed before buckets could differ.
+const DefaultRateLimitAttempts = 5
+
+// RecordFailedAttemptWithLimit is RecordFailedAttempt with an explicit budget,
+// because NOT EVERY BUCKET SHOULD HAVE THE SAME ONE.
+//
+// A per-address bucket wants to be tight: it is what stops a lone attacker, and
+// a human who mistypes meets it. A per-ACCOUNT bucket is also a per-account
+// LOCKOUT — at threshold N, anyone who knows an address can deny that user
+// their own login for 15 minutes by spending N requests, with no account and no
+// credentials — so it wants to sit far above any legitimate user's reach and
+// only has to catch DISTRIBUTED guessing at one target. Giving both the same
+// budget hands an attacker a cheap denial of service against any account they
+// can name, which is a poor trade for the brute-force cap it buys. See
+// handlers/auth_buckets.go for the numbers and the reasoning next to them.
+func (m *UserModel) RecordFailedAttemptWithLimit(ip string, maxAttempts int) error {
 	_, err := m.writeDB.Exec(`
 		INSERT INTO rate_limits (ip, attempts, locked_until, updated_at)
 		VALUES (?, 1, NULL, CURRENT_TIMESTAMP)
@@ -170,10 +190,10 @@ func (m *UserModel) RecordFailedAttempt(ip string) error {
 				THEN 1 ELSE attempts + 1 END,
 			locked_until = CASE
 				WHEN updated_at < datetime('now', '-15 minutes') THEN NULL
-				WHEN attempts + 1 >= 5 THEN datetime('now', '+15 minutes')
+				WHEN attempts + 1 >= ? THEN datetime('now', '+15 minutes')
 				ELSE locked_until END,
 			updated_at = CURRENT_TIMESTAMP
-	`, ip)
+	`, ip, maxAttempts)
 	return err
 }
 

@@ -60,6 +60,124 @@ var funcMap = template.FuncMap{
 		}
 		return base
 	},
+	// jsonName is the struct tag a field is serialized under — "-" for a
+	// credential column, so it is never on the wire.
+	//
+	// The generator used to tag EVERY field with its column name, which meant
+	// create_model handed back a struct whose bcrypt hash marshalled out of any
+	// endpoint that returned the model whole. "Remember to project it out"
+	// holds until the first handler that forgets; a tag holds always.
+	// scaffold_auth's user_model.go.tmpl tags password_hash the same way.
+	//
+	// It uses isCredentialColumn, not isSecret: a column NAMED like a
+	// credential is kept off the wire even when it was declared `string`,
+	// because a wrong declaration is exactly how a hash reached the wire.
+	"jsonName": func(f Field) string {
+		if isCredentialColumn(f) {
+			return "-"
+		}
+		return f.Name
+	},
+	"publicFields": publicFields,
+	// refuseCredentials ABORTS template execution when any field holds
+	// credential material. A template func that returns a non-nil error stops
+	// the render, and renderToFile writes nothing on a render error, so the
+	// refusal is total: no partial file lands.
+	//
+	// WHY A TEMPLATE-LEVEL GUARD AND NOT ONLY A TOOL-LEVEL ONE. The generic
+	// CRUD surface decodes a request struct with every field tagged by column
+	// name and passes the lot to Create/Update. For a credential column that
+	// means a PUT which simply OMITS the field decodes it to "", the model
+	// bcrypts "" and stores it — a known-empty password anyone can then
+	// authenticate against, on an endpoint that is PUBLIC by default. Until
+	// create_model's password handling was fixed, this combination happened not
+	// to compile for any column not named exactly `password`, so a compile
+	// error was incidentally preventing it; that accident is now gone.
+	// handleScaffoldResource refuses such a field at the tool boundary, and
+	// this is the second, independent line: a later caller who renders these
+	// templates directly, or who lifts the tool check, still cannot produce the
+	// dangerous file.
+	"refuseCredentials": func(surface string, fields []Field) (string, error) {
+		// Misdeclared first: same refusal, but a message that names the actual
+		// mistake is what makes it actionable.
+		if names := misdeclaredCredentialNames(fields); len(names) > 0 {
+			return "", errors.New(misdeclaredCredentialRefusal(surface, names))
+		}
+		if names := credentialFieldNames(fields); len(names) > 0 {
+			return "", errors.New(credentialRefusal(surface, names))
+		}
+		return "", nil
+	},
+	// refuseMisdeclaredCredentials is the narrower half, for a surface where a
+	// real `password` field is legitimate but a column NAMED after a stored
+	// hash is not — add_js_form's generated form being the only one today.
+	"refuseMisdeclaredCredentials": func(surface string, fields []Field) (string, error) {
+		if names := misdeclaredCredentialNames(fields); len(names) > 0 {
+			return "", errors.New(misdeclaredCredentialRefusal(surface, names))
+		}
+		return "", nil
+	},
+	// colsPrefixed is joinNames with a leading ", ", or "" for no fields — for
+	// splicing a variable column list between two fixed ones ("SELECT id" ...
+	// ", created_at"). A model whose only field is a credential has an EMPTY
+	// public column list, and joinNames alone would render
+	// "SELECT id, , created_at".
+	"colsPrefixed": func(fields []Field) string {
+		if len(fields) == 0 {
+			return ""
+		}
+		names := make([]string, len(fields))
+		for i, f := range fields {
+			names[i] = f.Name
+		}
+		return ", " + strings.Join(names, ", ")
+	},
+	// scanPrefixed is scanTargets with a leading ", ", or "" for no fields —
+	// the Scan-argument counterpart of colsPrefixed.
+	"scanPrefixed": func(fields []Field, prefix string) string {
+		if len(fields) == 0 {
+			return ""
+		}
+		refs := make([]string, len(fields))
+		for i, f := range fields {
+			if f.Nullable {
+				refs[i] = "&" + f.Name + "Null"
+			} else {
+				refs[i] = prefix + toPascal(f.Name)
+			}
+		}
+		return ", " + strings.Join(refs, ", ")
+	},
+	// passwordGuards emits the length check and the bcrypt call for every
+	// credential field, ahead of the INSERT/UPDATE that consumes the hash.
+	//
+	// retPrefix is what a return statement needs before the error — "0, " for
+	// Create's (int64, error), "" for Update's error.
+	//
+	// This replaced two hard-coded template lines that hashed []byte(password)
+	// while createParams named the parameter after the COLUMN, so any password
+	// column not literally named `password` generated a file that referenced an
+	// undeclared identifier and did not compile. Deriving both names from one
+	// place (createParamNames) is what makes that impossible rather than merely
+	// fixed.
+	"passwordGuards": func(data TemplateData, indent, retPrefix string) string {
+		names := createParamNames(data.Fields)
+		var b strings.Builder
+		for i, f := range data.Fields {
+			if !isSecret(f) {
+				continue
+			}
+			p := names[i]
+			b.WriteString(indent + "if len(" + p + ") > " + data.Name + "MaxPasswordBytes {\n")
+			b.WriteString(indent + "\treturn " + retPrefix + "Err" + data.PascalName + "PasswordTooLong\n")
+			b.WriteString(indent + "}\n")
+			b.WriteString(indent + hashedVar(p) + ", err := bcrypt.GenerateFromPassword([]byte(" + p + "), bcrypt.DefaultCost)\n")
+			b.WriteString(indent + "if err != nil {\n")
+			b.WriteString(indent + "\treturn " + retPrefix + "err\n")
+			b.WriteString(indent + "}\n")
+		}
+		return b.String()
+	},
 	"joinNames": func(fields []Field) string {
 		names := make([]string, len(fields))
 		for i, f := range fields {
@@ -126,23 +244,25 @@ var funcMap = template.FuncMap{
 		return strings.Join(parts, ", ")
 	},
 	"createParams": func(fields []Field) string {
+		names := createParamNames(fields)
 		params := make([]string, len(fields))
 		for i, f := range fields {
 			goT := goTypeFor(f.Type)
 			if f.Nullable {
 				goT = "*" + goT
 			}
-			params[i] = f.Name + " " + goT
+			params[i] = names[i] + " " + goT
 		}
 		return strings.Join(params, ", ")
 	},
 	"insertArgs": func(fields []Field) string {
+		names := createParamNames(fields)
 		args := make([]string, len(fields))
 		for i, f := range fields {
-			if f.Type == "password" {
-				args[i] = "string(hashed)"
+			if isSecret(f) {
+				args[i] = "string(" + hashedVar(names[i]) + ")"
 			} else {
-				args[i] = f.Name
+				args[i] = names[i]
 			}
 		}
 		return strings.Join(args, ", ")
@@ -455,6 +575,273 @@ func parseFields(raw []string) []Field {
 	return fields
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CREDENTIAL CLASSIFICATION — the single source every credential rule derives
+// from. The struct tag, the sort/filter whitelist, the list query, the manifest
+// entry and the scaffold_resource refusal all read these predicates, so there
+// is one definition of "this column holds a secret" rather than five that drift.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// isSecret reports whether a field was DECLARED as credential material.
+//
+// It is the CODE-GENERATION predicate: `password` is the type that makes the
+// generator bcrypt the value, name the Create/Update parameter after the
+// plaintext rather than the column, and emit the length guard. Nothing else may
+// widen it — see isCredentialColumn for the predicate that decides EXPOSURE,
+// and credentialNamedColumn for why the two are not the same question.
+func isSecret(f Field) bool { return f.Type == "password" }
+
+// credentialWords are the name SEGMENTS that say "this column holds a secret".
+// Matched per underscore-separated segment rather than as substrings, so
+// `secretary_id` and `passwordless_at` do not match while `client_secret` and
+// `session_token` do.
+//
+// `key` is deliberately absent: `sort_key` and `foreign_key` are ordinary
+// columns, and a bare `key` segment would refuse both. `api_key` and
+// `private_key` are caught by credentialPhrases instead, which matches the
+// whole name rather than one segment of it.
+//
+// `token` IS here, and `token_count` is the one plausible false positive. It is
+// accepted: the consequence at a read surface is a NOTE and a hidden column,
+// and at a write surface a refusal with a message naming the column and saying
+// how to proceed. Failing closed on an ambiguous name is the right default when
+// the failure mode on the other side is a credential in a public CRUD body.
+var credentialWords = map[string]bool{
+	"password":   true,
+	"passwd":     true,
+	"passphrase": true,
+	"secret":     true,
+	"token":      true,
+	"apikey":     true,
+	"salt":       true,
+	"otp":        true,
+}
+
+// credentialPhrases are whole names, matched after separators are removed, for
+// credential names built from words that are each innocent on their own.
+// `api_key` is [api, key] — neither is a credential word, and `key` cannot be
+// made one without refusing `sort_key`. `pass_word` is the same trap in
+// reverse: it is a password column that segment matching cannot see, because
+// neither `pass` nor `word` is on the list.
+//
+// Compared by EQUALITY on the compacted name, never as a substring, so
+// `passwordless_at` ("passwordlessat") and `salted_caramel_id`
+// ("saltedcaramelid") stay ordinary.
+var credentialPhrases = map[string]bool{
+	"password":     true,
+	"passwd":       true,
+	"passphrase":   true,
+	"apikey":       true,
+	"privatekey":   true,
+	"secretkey":    true,
+	"accesskey":    true,
+	"recoverycode": true,
+	"backupcode":   true,
+	"sessiontoken": true,
+	"refreshtoken": true,
+	"accesstoken":  true,
+	"otp":          true,
+	"salt":         true,
+}
+
+// credentialNamedColumn reports whether a COLUMN NAME claims to hold credential
+// material, independently of how the field was declared.
+//
+// WHY A NAME HEURISTIC EXISTS AT ALL. isSecret is a type check, and applySchema
+// validates a declared type against the column's SQL type but never promotes
+// TEXT to `password`. So `password_hash:string` passes every other check in the
+// generator: it is tagged with its column name and serialized, it goes into the
+// sort/filter whitelist (an ordering oracle over stored hashes), and
+// scaffold_resource generates a CRUD PUT that writes a CALLER-SUPPLIED value
+// into it verbatim. That last one is worse than the bcrypt("") blanking the
+// type-level guard closes, because an attacker supplies the bcrypt hash of a
+// password they already know and then authenticates with it. The declaration
+// was the only thing standing between a foot-gun and a backdoor, and a
+// declaration is exactly the thing a hurried author gets wrong.
+//
+// Matching is on underscore-separated segments, plus a `_hash` SUFFIX, plus a
+// whole-name check for credential names built from individually innocent words
+// (`api_key`, `private_key`, `recovery_code`, `pass_word`). So `password_hash`,
+// `pw_secret`, `session_token`, `refresh_token`, `salt`, `otp`, `passphrase`
+// and `api_key_hash` all match, while `secretary_id`, `passwordless_at`,
+// `sort_key`, `foreign_key` and `hash_algorithm` do not.
+func credentialNamedColumn(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if strings.HasSuffix(n, "_hash") {
+		return true
+	}
+	for _, seg := range strings.Split(n, "_") {
+		if credentialWords[seg] {
+			return true
+		}
+	}
+	// Whole-name match for credential names assembled from innocent words —
+	// see credentialPhrases. Equality on the compacted name, not a substring
+	// test, so ordinary columns that merely contain one of these do not trip.
+	return credentialPhrases[strings.ReplaceAll(n, "_", "")]
+}
+
+// isCredentialColumn is the EXPOSURE predicate: may this column be serialized,
+// ordered by, filtered on, or listed in the manifest as part of the served
+// surface? A column is credential material if it was declared one OR if its
+// name says it is. Both halves are needed — the declaration can be wrong, and
+// the name can be absent (`pw` declared `password` is a secret by type alone).
+//
+// It is deliberately WIDER than isSecret and deliberately NOT used for code
+// generation. A digest column such as `token_hash` holds an already-hashed
+// value; treating it as a `password` would make Create bcrypt it a second time
+// and silently break every lookup that compares against the stored digest. So
+// the name heuristic hides the column, and only the declared type hashes it.
+func isCredentialColumn(f Field) bool {
+	return isSecret(f) || credentialNamedColumn(f.Name)
+}
+
+// credentialFieldNames lists, in declaration order, the columns in fields that
+// hold credential material — by declaration or by name. Empty for the ordinary
+// case, which is what every caller branches on.
+func credentialFieldNames(fields []Field) []string {
+	var names []string
+	for _, f := range fields {
+		if isCredentialColumn(f) {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+// misdeclaredCredentialNames lists the columns whose NAME says credential but
+// whose declared type does not — the exact gap between the two predicates, and
+// the thing the write-surface tools refuse.
+func misdeclaredCredentialNames(fields []Field) []string {
+	var names []string
+	for _, f := range fields {
+		if !isSecret(f) && credentialNamedColumn(f.Name) {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+// publicFields is fields minus every credential column — by declared type OR by
+// column name. Everything a list endpoint reads, orders by, filters on, caches
+// or serializes is built from this.
+//
+// The name half matters because the type half can be wrong: a `password_hash`
+// declared `string` was, until this predicate widened, selected into GetPage,
+// written to the page cache, tagged with its own column name, and offered to
+// `?sort=` / `?filter=` as an oracle over stored hashes.
+func publicFields(fields []Field) []Field {
+	out := make([]Field, 0, len(fields))
+	for _, f := range fields {
+		if isCredentialColumn(f) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// misdeclaredCredentialRefusal is the wording every write surface uses — the
+// scaffold_resource and add_js_form tool checks and the template guards behind
+// them — so the operator reads the same explanation whichever line they hit.
+//
+// It names the column, because "a credential field" sends an author looking at
+// the wrong one in a six-field list.
+func misdeclaredCredentialRefusal(surface string, names []string) string {
+	return surface + " refuses the field(s) " + strings.Join(names, ", ") +
+		": the COLUMN NAME says credential material but the field is not declared `password`, so the generator " +
+		"would treat it as ordinary data — serialized, sortable, filterable, and settable verbatim by whatever " +
+		"the caller sends. That is worse than a blanked password: an attacker who can write the column stores " +
+		"the bcrypt hash of a password they already know and then logs in with it.\n" +
+		"Fixes, in order of preference:\n" +
+		"  1. Use scaffold_auth for a credential-bearing resource — it owns the whole login path.\n" +
+		"  2. create_model + create_handler, and write the write path by hand so it can tell an absent field " +
+		"from an empty one. create_model does NOT refuse this name (it generates no endpoint), it simply keeps " +
+		"the column off the wire.\n" +
+		"  3. Declare it `" + names[0] + ":password` if it really is a bcrypt password column and this is not a " +
+		"generic CRUD surface.\n" +
+		"If the column is genuinely NOT a credential (a content digest, an ETag, a file checksum), a generic " +
+		"CRUD write is the wrong surface for it regardless: a digest is computed by the server, never supplied " +
+		"by the client. Leave it out of the field list — the rest of the table still scaffolds here — and add a " +
+		"method in models/<model>_ext.go if the app needs to read it."
+}
+
+// credentialRefusal is the wording used by both halves of the refusal — the
+// scaffold_resource tool check and the template guard.
+func credentialRefusal(surface string, names []string) string {
+	return surface + " refuses the credential field(s) " + strings.Join(names, ", ") +
+		": a generic CRUD surface decodes every field by column name and hands them all to Create/Update, " +
+		"so a PUT that merely OMITS a password field decodes it to \"\" and overwrites the stored credential " +
+		"with a hash of the empty string — a password anyone can then log in with, on an endpoint that is " +
+		"PUBLIC by default. " +
+		"Use scaffold_auth for a credential-bearing resource, or create_model + create_handler and write the " +
+		"update path by hand so it can tell an absent field from an empty one. " +
+		"Scaffold the rest of the table here and leave the credential column out of the field list."
+}
+
+// credentialExclusionNote reports, in a tool result, which columns the
+// generator classified as credential material and therefore kept off the wire.
+//
+// create_model and scaffold_list do NOT refuse these: neither emits a write
+// path a caller can reach, so the dangerous half of the defect is not present,
+// and refusing would make a legitimate digest column (`token_hash`,
+// `content_hash`) unscaffoldable while recommending a remedy — declare it
+// `password` — that would bcrypt an already-hashed value and break every lookup
+// against it. What IS present is a column quietly disappearing from a response,
+// which is the kind of surprise that gets debugged at 2am, so the tool says so
+// at the moment it happens.
+func credentialExclusionNote(fields []Field) string {
+	names := credentialFieldNames(fields)
+	if len(names) == 0 {
+		return ""
+	}
+	return "\n\nNOTE: " + strings.Join(names, ", ") + " classified as credential material — tagged `json:\"-\"`, " +
+		"absent from the sort/filter whitelist (so ?sort= / ?filter= cannot name it), not selected by GetPage, " +
+		"and not listed in api.json. Find() still selects it. Rename the column if that classification is wrong."
+}
+
+// hashedVar names the local holding a bcrypt hash for the plaintext parameter
+// p. Derived from the parameter so two password columns in one model declare
+// two distinct locals instead of redeclaring `hashed`.
+func hashedVar(param string) string { return param + "Hashed" }
+
+// createParamNames returns the Create/Update parameter name for each field.
+//
+// Every non-credential column takes its own name. A password column stores a
+// HASH but the method takes PLAINTEXT, so `password_hash string` would be a
+// parameter that lies about its contents — and the template's bcrypt call
+// compounded it by hard-coding `password`, so the two names disagreed and the
+// generated file did not compile unless the column happened to be called
+// `password`. Trimming a `_hash` suffix gives the honest name (password_hash →
+// password) and matches what scaffold_auth's hand-written User model calls it.
+//
+// The trimmed name is checked against every real column and against names
+// already taken, so a table with BOTH `password` and `password_hash` gets
+// `password` and `passwordPlain` rather than two parameters of one name.
+func createParamNames(fields []Field) []string {
+	taken := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		if !isSecret(f) {
+			taken[f.Name] = true
+		}
+	}
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		n := f.Name
+		if isSecret(f) {
+			if trimmed := strings.TrimSuffix(f.Name, "_hash"); trimmed != "" {
+				n = trimmed
+			}
+			for taken[n] {
+				n += "Plain"
+			}
+		}
+		taken[n] = true
+		names[i] = n
+	}
+	return names
+}
+
 type TemplateData struct {
 	Name         string
 	PascalName   string
@@ -657,7 +1044,7 @@ func main() {
 	), handleScaffoldList)
 
 	s.AddTool(mcp.NewTool("scaffold_resource",
-		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, register all 5 routes in api.json + routes_gen.go, and serve the list page at /<plural> via pages_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources."),
+		mcp.WithDescription("Generate full CRUD for a resource: model (with Update) + list/detail/create/update/delete handlers + list page, register all 5 routes in api.json + routes_gen.go, and serve the list page at /<plural> via pages_gen.go. List supports ?sort=&filter= (whitelisted columns). Table must exist first (run execute_sql). Endpoints are public; protect per-endpoint via the manifest. Use scaffold_list for read-only resources. A `password` field is REFUSED: the generated PUT decodes every field by column name, so a request that omits the password blanks the stored credential with bcrypt(\"\"). Use scaffold_auth, or create_model + create_handler."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Resource name in snake_case")),
 		mcp.WithArray("fields", mcp.Required(), mcp.Description("Fields as name:type. Types: string, int, float, boolean, password, timestamp. A DATETIME column MUST be declared timestamp, not string — string puts SQLite's native '2026-08-15 19:40:07' on the wire beside created_at's RFC3339, so one JSON object carries two timestamp formats and a typed client's .iso8601 decoder rejects the row. An unknown type is an error, not a silent string. name:ref:<model> declares a foreign key; name:email|url|uuid|date|datetime declare a string with a format hint.")),
 	), handleScaffoldResource)
@@ -804,7 +1191,7 @@ func handleCreateModel(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 
 	return mcp.NewToolResultText("Created: " + outPath + "\nCreated: " + testPath +
-		"\n\nRegistered model " + name + " in api.json."), nil
+		"\n\nRegistered model " + name + " in api.json." + credentialExclusionNote(fields)), nil
 }
 func handleCreateHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	name, _ := req.Params.Arguments["name"].(string)
@@ -963,7 +1350,7 @@ func handleScaffoldList(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		strings.Join(results, "\n") +
 			"\n\nRegistered route GET /api/v1/" + toPlural(name) + " and page /" + toPlural(name) +
 			" — updated api.json + routes_gen.go + pages_gen.go.\n" +
-			"Add forms with add_js_form.\n\n" + runPatternChecks(),
+			"Add forms with add_js_form." + credentialExclusionNote(fields) + "\n\n" + runPatternChecks(),
 	), nil
 }
 
@@ -1038,6 +1425,27 @@ func handleScaffoldResource(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	fields := parseFields(rawFieldsToStrings(rawFields))
 	if len(fields) == 0 {
 		return errResult("at least one field is required"), nil
+	}
+	// A CREDENTIAL COLUMN IS REFUSED OUTRIGHT, before any DDL is read and long
+	// before a file is written. The generated PUT builds its request struct
+	// over every field and hands them all to Update, so a request that merely
+	// OMITS the password decodes it to "" and the model stores bcrypt("") — a
+	// known-empty password, on an endpoint this tool documents as PUBLIC by
+	// default. A generic CRUD endpoint has no business setting a credential at
+	// all, and refusing is a far narrower surface to keep correct than a
+	// pointer-and-skip-if-nil dance. The templates carry the same refusal, so
+	// lifting this check alone does not reopen the hole.
+	//
+	// The MISDECLARED case is checked first and answered separately, because
+	// its remedy is different: a field declared `password` is refused here
+	// outright, while a field merely NAMED like one may be legitimate data the
+	// author should keep out of a CRUD write path. Same refusal either way; a
+	// message that names the actual mistake is what makes it actionable.
+	if names := misdeclaredCredentialNames(fields); len(names) > 0 {
+		return errResult(misdeclaredCredentialRefusal("scaffold_resource", names)), nil
+	}
+	if names := credentialFieldNames(fields); len(names) > 0 {
+		return errResult(credentialRefusal("scaffold_resource", names)), nil
 	}
 	if err := checkReservedName(name); err != nil {
 		return errResult(err.Error()), nil
@@ -1222,6 +1630,15 @@ func handleAddJSForm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 
 	fields := parseFields(rawFieldsToStrings(rawFields))
+	// add_js_form takes its fields from the CALLER, not from api.json, so it is
+	// the one surface that can still put a credential column in front of a user
+	// after every generated endpoint stopped accepting one. A `password` FIELD
+	// is allowed — a sign-up form posting to a hand-written handler is a real
+	// use — but a field named after a stored hash is not: the browser has no
+	// business holding, or submitting, a value that column expects.
+	if names := misdeclaredCredentialNames(fields); len(names) > 0 {
+		return errResult(misdeclaredCredentialRefusal("add_js_form", names)), nil
+	}
 	data := newData(page, fields)
 	data.APIEndpoint = apiEndpoint
 	data.SubmitLabel = submitLabel

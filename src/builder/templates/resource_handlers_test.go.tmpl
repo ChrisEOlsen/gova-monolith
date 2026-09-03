@@ -1,3 +1,12 @@
+{{/* CREDENTIAL GUARD. This template builds a request struct tagged by column
+     name and passes every decoded field to Create/Update, so a PUT that OMITS a
+     password field would blank the stored credential with bcrypt(""). These
+     endpoints are PUBLIC by default. refuseCredentials aborts the render rather
+     than emitting that; renderToFile writes nothing on a render error, so no
+     partial file lands. handleScaffoldResource refuses the same input at the
+     tool boundary — this is the second, independent line. See
+     funcMap["refuseCredentials"]. */}}
+{{- refuseCredentials "resource_handlers_test.go.tmpl (scaffold_resource)" .Fields -}}
 package handlers
 
 import (

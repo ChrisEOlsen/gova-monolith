@@ -4,7 +4,9 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -654,20 +656,77 @@ func TestAuthBucketsTemplate_IsValidGo(t *testing.T) {
 // The generated test proves the behaviour; this one proves the TEMPLATE cannot
 // regress to emitting it, which the generated test cannot do — a scaffold_auth
 // re-run overwrites the generated files with whatever these templates say.
+//
+// It now also pins the SECOND bucket. Namespacing the two endpoints stopped a
+// success on one from erasing the other's failures; it did nothing about a
+// success on the SAME endpoint with a DIFFERENT account, which needs only a
+// self-service signup. The account bucket is what closes that, and it is only
+// safe from being an enumeration oracle because it is derived from the
+// SUBMITTED address before any lookup and counted on BOTH failure branches — so
+// this asserts the derivation line, not just that the symbol appears.
 func TestAuthHandlerTemplates_NamespaceTheirRateLimitBuckets(t *testing.T) {
 	for _, c := range []struct{ tmpl, want string }{
-		{"auth_handler.go.tmpl", "ip := loginBucket(clientIP(r))"},
-		{"mobile_auth_handler.go.tmpl", "ip := loginTokenBucket(clientIP(r))"},
+		{"auth_handler.go.tmpl", "ipBucket := loginBucket(clientIP(r))"},
+		{"mobile_auth_handler.go.tmpl", "ipBucket := loginTokenBucket(clientIP(r))"},
 	} {
 		out := renderAndParse(t, c.tmpl, newData("user", nil))
 		if !strings.Contains(out, c.want) {
-			t.Errorf("%s must key its limiter with %q", c.tmpl, c.want)
+			t.Errorf("%s must key its address bucket with %q", c.tmpl, c.want)
 		}
 		if strings.Contains(out, "ip := clientIP(r)") {
 			t.Errorf("%s keys its rate limiter on a bare clientIP(r) — that is one shared bucket "+
 				"with the other login endpoint, and a success on either erases both", c.tmpl)
 		}
+		// The per-account bucket, derived from the submitted address.
+		if !strings.Contains(out, "accountBucket := loginEmailBucket(email)") {
+			t.Errorf("%s has no per-account bucket: an attacker's success on their OWN account still "+
+				"clears the failures they racked up against someone else's", c.tmpl)
+		}
+		// Both buckets must be checked, counted and cleared together.
+		if !strings.Contains(out, "loginLimited(w, userModel, ipBucket, accountBucket)") {
+			t.Errorf("%s does not check both buckets before the password compare", c.tmpl)
+		}
+		if n := strings.Count(out, "recordLoginFailure(userModel, ipBucket, accountBucket)"); n != 2 {
+			t.Errorf("%s records both buckets on %d failure branches, want 2 — a branch that skips the "+
+				"account bucket for unknown addresses makes it a membership test", c.tmpl, n)
+		}
+		if !strings.Contains(out, "clearLoginAttempts(userModel, ipBucket, accountBucket)") {
+			t.Errorf("%s does not clear exactly the two buckets its success vouches for", c.tmpl)
+		}
 	}
+}
+
+// TestAuthBucketsTemplate_AccountBudgetIsLooserThanTheAddressBudget pins the
+// asymmetry, which is a security decision rather than tuning.
+//
+// A per-account bucket is also a per-account LOCKOUT: at threshold N anyone who
+// knows an address can deny that user their own login by spending N requests,
+// with no account and no credentials. Set equal to the address budget it is a
+// cheap denial of service against any account an attacker can name. It only has
+// to catch DISTRIBUTED guessing, so it belongs well above any legitimate user's
+// reach — a real user is stopped by their own address bucket long before it.
+func TestAuthBucketsTemplate_AccountBudgetIsLooserThanTheAddressBudget(t *testing.T) {
+	out := renderAndParse(t, "auth_buckets.go.tmpl", newData("user", nil))
+	ip := budgetConst(t, out, "loginIPMaxAttempts")
+	account := budgetConst(t, out, "loginAccountMaxAttempts")
+	if account <= ip {
+		t.Errorf("loginAccountMaxAttempts (%d) must be greater than loginIPMaxAttempts (%d), or a lone "+
+			"attacker can lock any account they can name as cheaply as they exhaust their own address",
+			account, ip)
+	}
+}
+
+func budgetConst(t *testing.T, code, name string) int {
+	t.Helper()
+	m := regexp.MustCompile(name + `\s*=\s*(\d+)`).FindStringSubmatch(code)
+	if m == nil {
+		t.Fatalf("auth_buckets.go.tmpl does not define %s", name)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("%s is not an integer: %v", name, err)
+	}
+	return n
 }
 
 // TestAuthHandlerTemplate_DoesNotDefineClientIP keeps the trusted-proxy logic in

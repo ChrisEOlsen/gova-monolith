@@ -1,8 +1,14 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
 	"net"
+	"net/http"
 	"strings"
+
+	"gova/app/models"
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -68,11 +74,163 @@ import (
 // for every caller on the planet.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ─── budgets ─────────────────────────────────────────────────────────────────
+//
+// THE TWO KINDS OF BUCKET DO NOT GET THE SAME NUMBER, and that asymmetry is a
+// security decision rather than tuning.
+//
+// A per-ADDRESS bucket is what stops a lone attacker: they must spend it before
+// guessing again, and they cannot clear it without succeeding. It is also the
+// one a human who mistypes actually meets, so it stays tight.
+//
+// A per-ACCOUNT bucket is also a per-account LOCKOUT. At threshold N, anyone
+// who knows an address can deny that user their own login for 15 minutes by
+// spending N requests — no account, no credentials, no luck. Set equal to the
+// address budget it would be a cheap denial of service against any account an
+// attacker can name, which is a poor trade for the brute-force cap it buys.
+// It only has to catch DISTRIBUTED guessing at one target, which needs an
+// address pool and is far rarer, so it can sit well above any legitimate user's
+// reach: a real user is stopped by their own address bucket at 5, four times
+// over, long before touching 20.
+const (
+	loginIPMaxAttempts      = 5
+	loginAccountMaxAttempts = 20
+)
+
 // loginBucket is POST /api/v1/auth/login — the cookie login.
 func loginBucket(ip string) string { return "login:" + ip }
 
 // loginTokenBucket is POST /api/v1/auth/login_token — the bearer login.
 func loginTokenBucket(ip string) string { return "login_token:" + ip }
+
+// ─── the per-account bucket ──────────────────────────────────────────────────
+//
+// THE IP BUCKETS ABOVE ARE CLEARED BY A SUCCESSFUL LOGIN, AND THAT IS A BYPASS
+// ON ITS OWN. Namespacing the two endpoints stopped a success on the bearer
+// login from erasing the cookie login's failures; it did nothing about a
+// success on the SAME endpoint with a DIFFERENT account:
+//
+//	4 wrong passwords against victim@example.com  -> attempts = 4, no lock
+//	1 correct login to the attacker's own account -> ClearAttempts, ROW GONE
+//	4 more wrong passwords against the victim     -> attempts = 4 again
+//	  ...
+//
+// Unbounded guessing from one address, and the limiter reports itself healthy
+// the whole time because the fifth attempt is never reached. Anyone who can
+// sign up — which on an app that also ran scaffold_registration is anyone — has
+// the account the sequence needs.
+//
+// Never clearing on success was the alternative and was rejected: clearing is
+// genuinely useful for a legitimate user who mistyped twice and then got it
+// right, and taking it away would leave them locked out by their own success.
+//
+// So: a SECOND bucket, keyed on the account being attacked rather than on the
+// address attacking it. Both are checked before a password is looked at, both
+// are counted on failure, and a successful login clears the IP bucket and THIS
+// ACCOUNT'S bucket — nothing else. The invariant holds: erasing a bucket
+// requires proving the credential that bucket protects.
+//
+// WHAT IT COSTS, AND HOW THAT COST IS KEPT SMALL: enough failures against one
+// account will lock that account's logins for fifteen minutes, whoever caused
+// them. That is the standard per-account-lockout trade and there is no way to
+// have the throttle without it — so the budget is set well above the address
+// budget (see the constants above) rather than equal to it. A lone attacker
+// exhausts their OWN address bucket long before they reach a victim's account
+// bucket, so locking someone out needs an address pool rather than a loop.
+//
+// IT MUST NOT BECOME A USER-ENUMERATION ORACLE, and three things make sure it
+// is not:
+//
+//  1. The bucket is derived from the SUBMITTED address, not from a user row, so
+//     an address with no account has one exactly like an address with one.
+//  2. Both failure paths count against it — the unknown-email path as well as
+//     the wrong-password path. Counting only real accounts would make "did the
+//     429 ever arrive" a membership test.
+//  3. Both buckets are read BEFORE the user lookup, and the 429 is byte-for-byte
+//     the answer the other bucket gives, so neither the body nor the number of
+//     database reads differs by whether the account exists.
+//
+// loginEmailBucket is shared by the cookie and bearer logins deliberately —
+// they are one credential check reached two ways, and separate account buckets
+// would hand an attacker ten guesses per account instead of five.
+func loginEmailBucket(email string) string { return "login_email:" + emailBucketKey(email) }
+
+// emailBucketKey is the stable, bounded, non-reversible form of an email
+// address, for use as a rate-limit key.
+//
+// HASHED, NOT RAW. rate_limits is written by unauthenticated callers, so a raw
+// key would let anyone dictate the contents of a column — turning the table
+// into a log of every address anybody probed, of unbounded length, sitting in
+// the same database as the accounts. The digest is 16 bytes of SHA-256: not a
+// password, so there is nothing for a work factor to buy, and collisions merely
+// share a bucket.
+//
+// LOWERCASED AND TRIMMED FIRST, and that is load bearing rather than tidy:
+// without it `Victim@example.com` and `victim@example.com` are two buckets and
+// the whole control is bypassed by varying the case.
+func emailBucketKey(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return hex.EncodeToString(sum[:16])
+}
+
+// ─── using two buckets without repeating four lines per branch ───────────────
+
+// recordLoginFailure counts one failed login against every bucket that meters
+// it.
+//
+// The write error is NOT ignorable even though nothing useful can be said to
+// the caller: a failure here means the attempt was never counted, so the
+// counter never trips and the control is silently off. Every bucket is still
+// attempted after one fails — a limiter that gives up halfway is a limiter that
+// stopped limiting.
+func recordLoginFailure(m *models.UserModel, ipBucket, accountBucket string) {
+	recordAttempt(m, ipBucket, loginIPMaxAttempts)
+	recordAttempt(m, accountBucket, loginAccountMaxAttempts)
+}
+
+// recordAttempt is the shared body — one bucket, one budget, error logged.
+func recordAttempt(m *models.UserModel, bucket string, maxAttempts int) {
+	if err := m.RecordFailedAttemptWithLimit(bucket, maxAttempts); err != nil {
+		log.Printf("handlers: rate limiter failed to record an attempt for %q: %v", bucket, err)
+	}
+}
+
+// clearLoginAttempts forgets the buckets a successful login is entitled to
+// forget: the caller's address, and the account that just authenticated. Never
+// a bucket belonging to an account the caller has not proved they hold.
+func clearLoginAttempts(m *models.UserModel, buckets ...string) {
+	for _, bucket := range buckets {
+		if err := m.ClearAttempts(bucket); err != nil {
+			log.Printf("handlers: rate limiter failed to clear %q: %v", bucket, err)
+		}
+	}
+}
+
+// loginLimited reports whether ANY of the given buckets is currently locked,
+// writing the response itself when the answer is yes or when the read fails.
+//
+// A READ FAILURE IS A 500, NOT A 429 — collapsing the two makes a broken
+// database tell every caller "too many attempts, try again in 15 minutes", a
+// specific and false claim that sends an operator to the limiter instead of to
+// the outage. Failing closed is right; lying about why is not.
+//
+// The bucket name reaches the log, which is another reason the account key is a
+// digest: an operator gets a stable identifier to correlate on, and no address.
+func loginLimited(w http.ResponseWriter, m *models.UserModel, buckets ...string) bool {
+	for _, bucket := range buckets {
+		locked, err := m.IsRateLimited(bucket)
+		if err != nil {
+			log.Printf("handlers: rate-limit read failed for %q: %v", bucket, err)
+			jsonError(w, "Something went wrong. Try again.", http.StatusInternalServerError)
+			return true
+		}
+		if locked {
+			jsonError(w, "Too many attempts. Try again in 15 minutes.", http.StatusTooManyRequests)
+			return true
+		}
+	}
+	return false
+}
 
 // registerBucket is POST /api/v1/auth/register.
 //

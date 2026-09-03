@@ -3,8 +3,11 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 
 	"gova/app/cache"
@@ -109,11 +112,30 @@ func TestLoginBucketKey_IsNamespaced(t *testing.T) {
 	req.RemoteAddr = "203.0.113.7:41234"
 	LoginPOST(testDB.Read, testDB.Write, appCache)(httptest.NewRecorder(), req)
 
-	keys := bucketKeys(t, testDB)
-	want := loginBucket("203.0.113.7")
-	if len(keys) != 1 || keys[0] != want {
-		t.Fatalf("cookie login wrote %v, want [%s]", keys, want)
+	// TWO rows now: the address bucket and the account bucket. Both are
+	// namespaced, and neither is a bare address.
+	want := []string{loginBucket("203.0.113.7"), loginEmailBucket("ada@example.com")}
+	if keys := bucketKeys(t, testDB); !sameKeys(keys, want) {
+		t.Fatalf("cookie login wrote %v, want %v", keys, want)
 	}
+}
+
+// sameKeys compares two key sets ignoring order — bucketKeys reads them back in
+// whatever order the table yields.
+func sameKeys(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	g := append([]string(nil), got...)
+	w := append([]string(nil), want...)
+	sort.Strings(g)
+	sort.Strings(w)
+	for i := range g {
+		if g[i] != w[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // The bearer login writes a key that names the bearer login — and nothing else.
@@ -126,10 +148,12 @@ func TestLoginTokenBucketKey_IsNamespaced(t *testing.T) {
 	req.RemoteAddr = "203.0.113.7:41234"
 	MobileLoginPOST(testDB.Read, testDB.Write, appCache)(httptest.NewRecorder(), req)
 
-	keys := bucketKeys(t, testDB)
-	want := loginTokenBucket("203.0.113.7")
-	if len(keys) != 1 || keys[0] != want {
-		t.Fatalf("bearer login wrote %v, want [%s]", keys, want)
+	// The bearer login's OWN address bucket, plus the account bucket it shares
+	// with the cookie login — deliberately shared, because the two endpoints
+	// are one credential check reached two ways.
+	want := []string{loginTokenBucket("203.0.113.7"), loginEmailBucket("ada@example.com")}
+	if keys := bucketKeys(t, testDB); !sameKeys(keys, want) {
+		t.Fatalf("bearer login wrote %v, want %v", keys, want)
 	}
 }
 
@@ -245,8 +269,9 @@ func TestLoginSuccess_ClearsItsOwnBucket(t *testing.T) {
 		req.RemoteAddr = "203.0.113.7:41234"
 		login(httptest.NewRecorder(), req)
 	}
-	if keys := bucketKeys(t, testDB); len(keys) != 1 {
-		t.Fatalf("expected one bucket row after failures, got %v", keys)
+	// Two rows: the address bucket and the account bucket.
+	if keys := bucketKeys(t, testDB); len(keys) != 2 {
+		t.Fatalf("expected the address and account bucket rows after failures, got %v", keys)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "correct-horse-battery-staple"))
@@ -256,8 +281,86 @@ func TestLoginSuccess_ClearsItsOwnBucket(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("login: got %d, want 200", rec.Code)
 	}
+	// A success clears BOTH buckets it vouches for — this address, and this
+	// account — and nothing else.
 	if keys := bucketKeys(t, testDB); len(keys) != 0 {
-		t.Fatalf("a successful login must clear its own bucket, still holding %v", keys)
+		t.Fatalf("a successful login must clear its own buckets, still holding %v", keys)
+	}
+}
+
+// A SUCCESS ON ONE ACCOUNT DOES NOT ERASE ANOTHER ACCOUNT'S FAILURES.
+//
+// Namespacing the two endpoints closed the cross-ENDPOINT bypass. This is the
+// cross-ACCOUNT one, which needs only a self-service signup: guess at a victim,
+// log in as yourself to wipe the row, repeat. The account bucket is what
+// survives it, and this is the test that says so.
+func TestLoginSuccess_DoesNotClearAnotherAccountsBucket(t *testing.T) {
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+	login := LoginPOST(testDB.Read, testDB.Write, appCache)
+	userModel := models.NewUserModel(testDB.Read, testDB.Write, appCache)
+
+	// Failures against a DIFFERENT account, from a fresh address each time so
+	// the ADDRESS bucket never trips and short-circuits the account bucket —
+	// which is precisely the distributed case the account bucket exists for.
+	victim := loginEmailBucket("victim@example.com")
+	for i := 0; i < loginAccountMaxAttempts; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("victim@example.com", "wrong"))
+		req.RemoteAddr = fmt.Sprintf("198.51.100.%d:41234", i+1)
+		login(httptest.NewRecorder(), req)
+	}
+	if locked, err := userModel.IsRateLimited(victim); err != nil || !locked {
+		t.Fatalf("the victim's account bucket should be locked (locked=%v err=%v)", locked, err)
+	}
+
+	// The attacker's own successful login, from a fresh address so not even the
+	// address bucket is shared.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "192.0.2.99:41234"
+	rec := httptest.NewRecorder()
+	login(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the attacker's own login should succeed: got %d", rec.Code)
+	}
+
+	if locked, err := userModel.IsRateLimited(victim); err != nil || !locked {
+		t.Fatalf("BYPASS: a success on one account cleared another's bucket (locked=%v err=%v)", locked, err)
+	}
+}
+
+// THE ACCOUNT BUDGET IS LOOSER THAN THE ADDRESS BUDGET, and that asymmetry is a
+// security decision.
+//
+// A per-account bucket is also a per-account LOCKOUT: at threshold N anyone who
+// knows an address can deny that user their own login by spending N requests,
+// with no account and no credentials. Equal budgets would make that as cheap as
+// exhausting one's own address. So a lone attacker must run out of address
+// budget first, which is what this asserts end to end.
+func TestLoneAttacker_CannotLockAnAccountTheyDoNotOwn(t *testing.T) {
+	if loginAccountMaxAttempts <= loginIPMaxAttempts {
+		t.Fatalf("loginAccountMaxAttempts (%d) must exceed loginIPMaxAttempts (%d)",
+			loginAccountMaxAttempts, loginIPMaxAttempts)
+	}
+	testDB := db.OpenTest(t, bucketTestSchema)
+	appCache := cache.New()
+	seedBucketUser(t, testDB, appCache)
+	login := LoginPOST(testDB.Read, testDB.Write, appCache)
+
+	// One attacker, one address, hammering a real account.
+	for i := 0; i < loginAccountMaxAttempts*2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "wrong"))
+		req.RemoteAddr = "198.51.100.1:41234"
+		login(httptest.NewRecorder(), req)
+	}
+
+	// The real user, from their own address, still gets in.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bucketBody("ada@example.com", "correct-horse-battery-staple"))
+	req.RemoteAddr = "203.0.113.10:41234"
+	rec := httptest.NewRecorder()
+	login(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("LOCKOUT DoS: a lone attacker locked a user out of their own account; got %d", rec.Code)
 	}
 }
 
@@ -270,5 +373,19 @@ func TestBucketKeys_AreDistinct(t *testing.T) {
 		if loginBucket(ip) == loginTokenBucket(ip) {
 			t.Fatalf("bucket keys collide for %q: %q", ip, loginBucket(ip))
 		}
+		if loginBucket(ip) == loginEmailBucket(ip) || loginTokenBucket(ip) == loginEmailBucket(ip) {
+			t.Fatalf("the account bucket collides with an address bucket for %q", ip)
+		}
+	}
+	// Two accounts are two buckets; case and padding are one.
+	if loginEmailBucket("a@example.com") == loginEmailBucket("b@example.com") {
+		t.Fatal("two accounts share one bucket")
+	}
+	if loginEmailBucket(" Ada@Example.COM ") != loginEmailBucket("ada@example.com") {
+		t.Fatal("the account key is not normalized: varying the case buys a second budget")
+	}
+	// The raw address must never land in the table.
+	if strings.Contains(loginEmailBucket("ada@example.com"), "ada@example.com") {
+		t.Fatal("the account key leaks the plaintext address into rate_limits")
 	}
 }

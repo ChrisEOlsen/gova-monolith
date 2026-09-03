@@ -1,3 +1,13 @@
+{{/* A form field named after a stored credential (password_hash, api_key_hash,
+     client_secret) is refused outright. add_js_form takes its fields from the
+     CALLER rather than from api.json, so it is the one surface that can still
+     put such an input in front of a user after every generated endpoint stopped
+     accepting one — and the browser has no business holding, let alone
+     submitting, the value that column expects. A `password` FIELD is fine here:
+     a sign-up form posting to a hand-written handler is a real use. The tool
+     refuses the same shape at its boundary; this is the second, independent
+     line. See funcMap["refuseMisdeclaredCredentials"]. */}}
+{{- refuseMisdeclaredCredentials "js_form.js.tmpl (add_js_form)" .Fields -}}
 function setup{{.FormName}}Form(container) {
   const wrapper = document.createElement('div');
   wrapper.className = 'border border-gray-200 rounded-lg p-4 bg-white space-y-3 mt-4';

@@ -52,7 +52,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 	if items[0].ID != id {
 		t.Errorf("GetPage: got ID %d, want %d", items[0].ID, id)
 	}
-{{range .Fields}}{{if .Nullable}}
+{{range publicFields .Fields}}{{if .Nullable}}
 	if items[0].{{toPascal .Name}} == nil {
 		t.Errorf("GetPage: {{.Name}} was not recovered (nil)")
 	} else if {{testFieldMismatch . (printf "*items[0].%s" (toPascal .Name)) (printf "%sTestVal" .Name)}} {
