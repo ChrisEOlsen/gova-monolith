@@ -17,8 +17,9 @@ STOP:
 
 ## 2. Brainstorm
 
-Use the `gova-brainstorm` skill with `SEED.md` as input. Run its Scale Gate
-first and state the classification. Wait for approval before continuing.
+Use the `gova-brainstorm` skill with `SEED.md` as input. Design everything
+`SEED.md` asks for — building a subset and calling it done is the failure mode
+here. Wait for approval before continuing.
 
 ## 3. Plan
 

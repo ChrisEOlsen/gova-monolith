@@ -37,25 +37,27 @@ A customization step is well-specified when a competent implementer with the tas
 
 **Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
 
-**Input:** on the Standard/Large path this is a committed spec under `docs/specs/`. On the Small path (see `gova-brainstorm` § Scale Gate) there is no spec file — the approved design is the conversation, and this plan is the only written artifact, so it carries the user review gate that the spec would otherwise hold. Ask the user to review the saved plan before invoking `gova-build-execution`.
+**Input:** on the Standard path this is a committed spec under `docs/specs/`. On the Small path there is no spec file — the approved design is the conversation, and this plan is the only written artifact, so it carries the user review gate that the spec would otherwise hold. Ask the user to review the saved plan before invoking `gova-build-execution`.
 
-## Scope Check
+## Cover the whole design
 
-If the spec covers multiple independent subsystems, it should have been broken into sub-project specs during brainstorming. If it wasn't, suggest breaking this into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
+One plan covers everything the approved design asks for. Do not split an app
+across several plans, and do not quietly leave a feature for "later" — if the
+design has eight resources, the plan has eight resources.
 
 ## Plan Size
 
-The plan is a task list with contracts, not a second copy of the implementation. A single-feature plan is typically under 150 lines; a multi-feature build under 600. If a plan is running several times the length of its spec, you are pre-writing implementation code — go back to "Specify Contracts, Not Bodies" and cut it. Length is a symptom, not a target: do not pad a short plan, and do not truncate a genuinely large one.
+The plan is a task list with contracts, not a second copy of the implementation. A single-feature plan is typically under 150 lines; a whole application, several hundred. If a plan is running several times the length of its spec, you are pre-writing implementation code — go back to "Specify Contracts, Not Bodies" and cut it. Length is a symptom, not a target: do not pad a short plan, and never drop a feature to hit a length.
 
 ## File Structure
 
-Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
+Before defining tasks, map out which files will be created or modified and what each one is responsible for.
 
 - Design units with clear boundaries: model files, handler files, JS modules, one per feature.
 - Files that change together should live together. Split by feature, not by technical layer.
 - In existing codebases, follow established patterns (`./gova inspect`). If a file you're modifying has grown unwieldy, including a split in the plan is reasonable.
 
-This structure informs the task decomposition. Each task should produce self-contained changes that make sense independently.
+This structure informs how you split the work into tasks. Each task should produce self-contained changes that make sense independently.
 
 **Keep tasks file-disjoint.** The executor batches up to 3 implementers that
 author concurrently (see `gova-build-execution` § The model), and two tasks
@@ -67,11 +69,17 @@ earlier one. Tasks with no edge between them can share a batch.
 
 ## Task Right-Sizing
 
-A task is the smallest unit that carries its own verification cycle and is worth a fresh reviewer's gate. One feature (one `./gova sql` + one `./gova resource` + its customization) is usually one task. Fold setup, migration, and customization into the task whose deliverable needs them; split only where a reviewer could meaningfully reject one task while approving its neighbor. Each task ends with an independently verifiable deliverable (page loads, endpoint returns the right shape).
+A task is one implementer's assignment and one reviewer's gate. One feature —
+its table, its `./gova` command, its customization — is usually one task, with
+setup and migration folded into the task whose deliverable needs them.
 
-## Bite-Sized Task Granularity
+Beyond that, size tasks by your own read of the work. There is no line count and
+no complexity rubric: a task ends with something independently verifiable (the
+page loads, the endpoint returns the right shape), and that is the only rule.
 
-**Each step is one action (2-5 minutes):**
+## Steps within a task
+
+**Each step is one action:**
 - "Call the gova command" - step
 - "Verify the generated files" - step
 - "Customize the generated handler/JS" - step
@@ -175,7 +183,7 @@ Not Bodies". The test is whether the description pins the behavior: "filter to
 
 After writing the complete plan, look at the source requirements with fresh eyes and check the plan against them. This is a checklist you run yourself — not a subagent dispatch.
 
-**1. Requirement coverage:** Skim each section/requirement in the spec (or the approved design, on the Small path). Can you point to a task that implements it? List any gaps.
+**1. Requirement coverage:** Skim every requirement in the spec (or the approved design, on the Small path). Can you point to a task that implements it? A requirement with no task is a gap, not a deferral — add the task.
 
 **2. Placeholder scan:** Search your plan for red flags — any of the patterns from the "No Placeholders" section above. Fix them.
 
