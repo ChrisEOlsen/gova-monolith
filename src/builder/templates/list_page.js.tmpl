@@ -1,14 +1,32 @@
-import { get, del } from '/static/js/lib/api.js';
-{{if .AuthRequired -}}
+import { get, post, del } from '/static/js/lib/api.js';
+{{- if .AuthRequired}}
 import { requireAuth } from '/static/js/lib/auth.js';
 {{- end}}
 
 const listEl = document.getElementById('{{.Name}}-list');
+const formEl = document.getElementById('{{.Name}}-form');
+
+// kind is the model's own type, so the form sends the JSON type the API
+// expects rather than a string for every field.
+const FIELDS = [
+{{- range .Fields}}
+  { name: '{{.Name}}', label: '{{titleCase .Name}}', type: '{{inputType .}}', kind: '{{.Type}}', required: {{if .Nullable}}false{{else}}true{{end}} },
+{{- end}}
+];
+
+function readValue(field, input) {
+  if (field.type === 'checkbox') return input.checked;
+  const raw = input.value;
+  if (raw === '' && !field.required) return null;
+  if (field.kind === 'int') return parseInt(raw, 10);
+  if (field.kind === 'float') return parseFloat(raw);
+  return raw;
+}
 
 export async function loadList() {
   const res = await get('/api/v1/{{.PluralName}}');
   if (!res.ok) {
-    listEl.textContent = 'Failed to load.';
+    showMessage(listEl, res.error ?? 'Failed to load.');
     return;
   }
   renderList(res.data ?? []);
@@ -17,37 +35,119 @@ export async function loadList() {
 function renderList(items) {
   listEl.replaceChildren();
   if (!items.length) {
-    const p = document.createElement('p');
-    p.className = 'text-sm text-gray-500';
-    p.textContent = 'No items yet.';
-    listEl.appendChild(p);
+    showMessage(listEl, 'No items yet.');
     return;
   }
   const ul = document.createElement('ul');
-  ul.className = 'divide-y divide-gray-100';
-  items.forEach(item => {
-    const li = document.createElement('li');
-    li.className = 'py-3 flex items-center justify-between';
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'text-sm font-medium';
-    nameSpan.textContent = item.{{(index .Fields 0).Name}};
-    const dateSpan = document.createElement('span');
-    dateSpan.className = 'text-xs text-gray-500';
-    dateSpan.textContent = new Date(item.created_at).toLocaleDateString();
-    li.appendChild(nameSpan);
-    li.appendChild(dateSpan);
-    ul.appendChild(li);
-  });
+  ul.className = 'divide-y divide-gray-100 border border-gray-200 rounded-lg bg-white';
+  for (const item of items) {
+    ul.appendChild(renderRow(item));
+  }
   listEl.appendChild(ul);
 }
 
-// @inject-forms
+function renderRow(item) {
+  const li = document.createElement('li');
+  li.className = 'py-3 px-4 flex items-center justify-between gap-4';
+
+  const text = document.createElement('span');
+  text.className = 'text-sm font-medium';
+  // textContent, never innerHTML — item values are user-supplied.
+  text.textContent = item.{{(index .Fields 0).Name}};
+
+  const meta = document.createElement('span');
+  meta.className = 'text-xs text-gray-500 ml-auto';
+  meta.textContent = new Date(item.created_at).toLocaleDateString();
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'text-xs text-red-600 hover:text-red-800 transition-colors';
+  removeBtn.textContent = 'Delete';
+  removeBtn.addEventListener('click', async () => {
+    removeBtn.disabled = true;
+    const res = await del(`/api/v1/{{.PluralName}}/${item.id}`);
+    if (res.ok) {
+      await loadList();
+      return;
+    }
+    removeBtn.disabled = false;
+    showMessage(listEl, res.error ?? 'Delete failed.');
+  });
+
+  li.append(text, meta, removeBtn);
+  return li;
+}
+
+function renderForm() {
+  const form = document.createElement('form');
+  form.className = 'border border-gray-200 rounded-lg p-4 bg-white space-y-3';
+
+  const inputs = new Map();
+  for (const field of FIELDS) {
+    const label = document.createElement('label');
+    label.className = 'block text-sm font-medium text-gray-700';
+    label.textContent = field.label;
+
+    const input = document.createElement('input');
+    input.type = field.type;
+    input.name = field.name;
+    input.required = field.required && field.type !== 'checkbox';
+    input.className = field.type === 'checkbox'
+      ? 'mt-1 mr-2 align-middle'
+      : 'mt-1 block w-full border border-gray-300 rounded px-3 py-2 text-sm ' +
+        'focus:outline-none focus:ring-1 focus:ring-gray-900';
+
+    label.appendChild(input);
+    form.appendChild(label);
+    inputs.set(field.name, input);
+  }
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'px-4 py-2 bg-gray-900 text-white text-sm rounded ' +
+    'hover:bg-gray-700 transition-colors disabled:opacity-50';
+  submitBtn.textContent = 'Add {{.PascalName}}';
+
+  const errEl = document.createElement('p');
+  errEl.className = 'text-sm text-red-600 hidden';
+
+  form.append(submitBtn, errEl);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    errEl.classList.add('hidden');
+
+    const body = {};
+    for (const field of FIELDS) {
+      body[field.name] = readValue(field, inputs.get(field.name));
+    }
+    const res = await post('/api/v1/{{.PluralName}}', body);
+
+    submitBtn.disabled = false;
+    if (res.ok) {
+      form.reset();
+      await loadList();
+      return;
+    }
+    errEl.textContent = res.error ?? 'Something went wrong.';
+    errEl.classList.remove('hidden');
+  });
+
+  formEl.replaceChildren(form);
+}
+
+function showMessage(target, text) {
+  const p = document.createElement('p');
+  p.className = 'text-sm text-gray-500';
+  p.textContent = text;
+  target.replaceChildren(p);
+}
 
 async function init() {
-  {{if .AuthRequired -}}
-  const user = await requireAuth();
-  if (!user) return;
+  {{- if .AuthRequired}}
+  if (!await requireAuth()) return;
   {{- end}}
+  renderForm();
   await loadList();
 }
 

@@ -1,193 +1,146 @@
 # Implementer Subagent Prompt Template
 
-Use this template when dispatching an implementer subagent.
+The implementer **authors code and nothing else**. The controller has already
+run the `gova` command, and owns restarts, the test suite and git — see
+SKILL.md § The model. Add the "Verify your own work" block only for a solo task.
 
 ```
 Subagent:
-  Claude Code — subagent_type: general-purpose, plus an explicit `model` (below)
-  opencode    — subagent_type: gova-implementer; there is no per-dispatch model
-                parameter, the model comes from .opencode/agent/gova-implementer.md
+  Claude Code — subagent_type: general-purpose, plus an explicit `model`
+  opencode    — subagent_type: gova-implementer (model comes from its agent file)
   description: "Implement Task N: [task name]"
-  model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
-         model silently inherits the session's most expensive one]
+  model: [REQUIRED per SKILL.md § Model Selection — an omitted model silently
+         inherits the session's most expensive one]
   prompt: |
-    You are implementing Task N: [task name]
+    You are implementing Task N: [task name].
 
-    ## Task Description
+    ## Your task
 
-    Read your task brief first: [BRIEF_FILE]
-    It contains the full task text from the plan.
+    Read your task brief: [BRIEF_FILE] — it is the full task text and the whole
+    of your assignment. Do not widen it.
+
+    The scaffold has already been run for you. These files exist and are yours
+    to customize:
+
+    [FILE_LIST — exactly the files this task may touch]
 
     ## Context
 
-    [Scene-setting: where this fits, dependencies, architectural context]
+    [Where this fits: what it depends on, what depends on it]
 
-    ## Mandatory Scaffolding Rule
+    ## What you do, and what you must not
 
-    For any feature handler or JS page: call the MCP tool FIRST, before
-    writing any code. Sequence: MCP tool → generated file → customize.
-    Never write a feature handler from scratch and then call MCP tools.
-    See CLAUDE.md § Mandatory Scaffolding Rule for the infrastructure
-    exception (middleware/, db/, cache/ are hand-written, not scaffolded).
+    **You author code. You touch nothing shared.**
 
-    ## Before You Begin
+    Other implementers may be editing their own files in this tree right now, so
+    anything global is the controller's job, not yours:
 
-    If you have questions about:
-    - The requirements or acceptance criteria
-    - The approach or implementation strategy
-    - Dependencies or assumptions
-    - Anything unclear in the task description
+    - Do **not** run `gova` — the scaffold is already done. api.json and the
+      `*_gen.go` files are already correct. If they look wrong, say so in your
+      report; never hand-edit them.
+    - Do **not** restart the app, run `go test`, or run `go build`. The package
+      is shared and a sibling mid-edit would fail your run for reasons that have
+      nothing to do with your code. The controller verifies the whole batch once
+      you are all done.
+    - Do **not** `git add` or `git commit`. The controller commits your task so
+      it gets its own reviewable diff.
+    - Do **not** edit a file outside the list above.
 
-    **Ask them now.** Raise any concerns before starting work.
+    Because you cannot compile, write carefully and re-read what you wrote. If
+    the task is intricate enough that you genuinely need to iterate against a
+    running app, stop and report NEEDS_CONTEXT saying so — the controller will
+    re-run it as a solo task where verification is allowed.
 
-    ## Your Job
+    ## The rules
 
-    Once you're clear on requirements:
-    1. Call the MCP scaffold tool the task brief specifies
-    2. Customize the generated files per the task
-    3. Verify: run `scripts/verify <your task's files>` (from the
-       gova-build-execution skill's scripts directory). It serializes the
-       restart behind a lock, restarts the app, waits for readiness, and runs
-       `go test ./...` — a failure naming ONLY files outside your task's list
-       is a sibling mid-edit in a parallel wave; it retries those and passes
-       ADVISORY. A failure naming YOUR files is real: fix it. Then check
-       `docker compose logs app` and confirm the page/endpoint behaves as
-       specified.
-    4. Commit your work
-    5. Self-review (see below)
-    6. Report back
+    `CLAUDE.md` governs this codebase. Two sections bind almost every task:
+
+    - **Mandatory Scaffolding Rule** — customize what the scaffold generated;
+      never replace a generated feature file with something hand-written. If you
+      must hand-write, say which rule made it infrastructure.
+    - **Critical Constraints** — no raw SQL in handlers, no HTML from Go, no
+      innerHTML with user data, no raw fetch(), no secrets in logs.
+
+    `docs/API-CONTRACT.md` governs anything a client can see.
+
+    ## Before you begin
+
+    If anything about the requirements, approach, or dependencies is unclear,
+    **ask now**. It is always fine to pause and clarify rather than guess.
 
     Work from: [directory]
 
-    **While you work:** If you encounter something unexpected or unclear, **ask questions**.
-    It's always OK to pause and clarify. Don't guess or make assumptions.
+    ## Scope and escalation
 
-    Verification is: the right MCP tool was called first, the generated
-    files match the task brief, `scripts/verify` passed on your files,
-    `docker compose logs app` is clean, and the page/endpoint works —
-    including the tests the scaffold call itself generated for you (see
-    CLAUDE.md § Mandatory Scaffolding Rule).
+    Follow the file structure in the plan; one clear responsibility per file. If
+    a file is growing past the plan's intent, report DONE_WITH_CONCERNS rather
+    than splitting it yourself. Improve code you touch, but do not restructure
+    outside your task.
 
-    ## Parallel Build Discipline
+    **It is always OK to say this is too hard.** Bad work is worse than no work,
+    and you will not be penalized for escalating. Stop and report BLOCKED or
+    NEEDS_CONTEXT when: the task needs an architectural decision with several
+    valid answers; you cannot find the clarity you need; the plan did not
+    anticipate what you are hitting; or you have been reading file after file
+    without progress. Say specifically what you are stuck on and what would help.
 
-    You may have sibling implementers working in the same tree RIGHT NOW
-    (CLAUDE.md § Parallel Builds, max 3 in flight). This changes three things:
+    ## Self-review before reporting
 
-    - **Stage only your files.** `git add` exactly the files in your task's
-      Files list — NEVER `git add -A` / `git add .`, which would sweep up a
-      sibling's in-progress edits into your commit. If `git add` fails with
-      an index.lock error, wait a few seconds and retry; a sibling is
-      committing.
-    - **Never write outside your task's Files list.** api.json,
-      routes_gen.go, pages_gen.go are updated by the MCP tools behind their
-      own lock — do not hand-edit them to "fix" something you see there; if
-      they look wrong, say so in your report.
-    - **Use the shared scripts, not raw commands.** Restart via
-      `scripts/restart-app` (it flocks: if a sibling holds it, you wait
-      instead of colliding). Tests via `scripts/verify`. A raw
-      `docker compose restart app` can interrupt a sibling's in-flight
-      verify and read as ITS feature being broken.
+    You cannot compile, so this pass is your only check. Read every file you
+    wrote, start to finish:
 
-    Your commit is your identity: the controller builds YOUR review from the
-    SHA you report, so report the exact head SHA (`git rev-parse HEAD`) after
-    your final commit.
+    - **Complete?** Every requirement in the brief, including edge cases.
+    - **Correct?** Names that exist, imports that match what you used,
+      signatures that match what you call. Look for the mistakes a compiler
+      would have caught.
+    - **Disciplined?** Nothing built that was not asked for. Existing patterns
+      followed. No file touched outside your list.
 
-    ## Code Organization
+    Fix what you find before reporting.
 
-    You reason best about code you can hold in context at once, and your edits are more
-    reliable when files are focused. Keep this in mind:
-    - Follow the file structure defined in the plan
-    - Each model/handler/JS module should have one clear responsibility
-    - If a file you're creating is growing beyond the plan's intent, stop and report
-      it as DONE_WITH_CONCERNS — don't split files on your own without plan guidance
-    - If an existing file you're modifying is already large or tangled, work carefully
-      and note it as a concern in your report
-    - In existing codebases, follow established patterns. Improve code you're touching
-      the way a good developer would, but don't restructure things outside your task.
+    ## Reporting
 
-    ## Critical Constraints (from CLAUDE.md)
+    Write the full report to [REPORT_FILE]: what you implemented, the files you
+    changed and what changed in each, anything you were unsure of, and your
+    self-review findings.
 
-    - No raw SQL in handlers — model methods only
-    - No HTML rendering in Go handlers — return JSON only
-    - JS: never `element.innerHTML = userValue` — use `textContent` or `createElement`
-    - Never `eval()` or `new Function()` with external data
-    - All fetch calls go through `api.js` — never raw `fetch()`
-    - Never `console.log()` tokens, passwords, or session data
-
-    ## When You're in Over Your Head
-
-    It is always OK to stop and say "this is too hard for me." Bad work is worse than
-    no work. You will not be penalized for escalating.
-
-    **STOP and escalate when:**
-    - The task requires architectural decisions with multiple valid approaches
-    - You need to understand code beyond what was provided and can't find clarity
-    - You feel uncertain about whether your approach is correct
-    - The task involves restructuring existing code in ways the plan didn't anticipate
-    - You've been reading file after file trying to understand the system without progress
-
-    **How to escalate:** Report back with status BLOCKED or NEEDS_CONTEXT. Describe
-    specifically what you're stuck on, what you've tried, and what kind of help you need.
-    The controller can provide more context, re-dispatch with a more capable model,
-    or break the task into smaller pieces.
-
-    ## Before Reporting Back: Self-Review
-
-    Review your work with fresh eyes. Ask yourself:
-
-    **Completeness:**
-    - Did I fully implement everything in the spec?
-    - Did I miss any requirements?
-    - Are there edge cases I didn't handle?
-
-    **Quality:**
-    - Is this my best work?
-    - Are names clear and accurate (match what things do, not how they work)?
-    - Is the code clean and maintainable?
-
-    **Discipline:**
-    - Did I avoid overbuilding (YAGNI)?
-    - Did I only build what was requested?
-    - Did I follow existing patterns in the codebase?
-    - Did I call the MCP scaffold tool first, before writing any feature code?
-
-    **Verification:**
-    - Does `docker compose logs app` show no errors after restart?
-    - Did I actually exercise the page/endpoint, not just assume it works?
-
-    If you find issues during self-review, fix them now before reporting.
-
-    ## After Review Findings
-
-    If a reviewer finds issues and you fix them, re-verify (restart + logs +
-    exercise the endpoint again) and append the results to your report file.
-    Reviewers will not re-verify for you — your report is the evidence.
-
-    ## Report Format
-
-    Write your full report to [REPORT_FILE]:
-    - What you implemented (or what you attempted, if blocked)
-    - MCP tool calls made (exact tool + args) and what they generated
-    - What you verified and how (restart output, logs, manual check,
-      `go test` output — paste the pass/fail summary line)
-    - Files changed
-    - Self-review findings (if any)
-    - Any issues or concerns
-
-    Then report back with ONLY (under 15 lines — the detail lives in the
-    report file):
+    Then reply with ONLY (under 15 lines):
     - **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
-    - Commits created (short SHA + subject), plus the exact head SHA
-      (`git rev-parse HEAD`) — the controller builds your review package from
-      it; a wrong SHA pairs your diff with a sibling's commits
-    - One-line verification summary (e.g. "verify passed on my files, /projects loads, create form works")
-    - Your concerns, if any
+    - The files you changed
+    - Concerns, if any
     - The report file path
 
-    If BLOCKED or NEEDS_CONTEXT, put the specifics in the final message
-    itself — the controller acts on it directly.
+    If BLOCKED or NEEDS_CONTEXT, put the specifics in the reply itself.
+    Use DONE_WITH_CONCERNS if you finished but have doubts. Never silently
+    produce work you are unsure about.
+```
 
-    Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
-    Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need
-    information that wasn't provided. Never silently produce work you're unsure about.
+## Solo tasks only — add this block
+
+A task dispatched alone may verify itself, because nothing else is being edited:
+
+```
+    ## Verify your own work
+
+    You are running alone, so the tree is yours. After customizing:
+
+    1. `scripts/verify` from the gova-build-execution skill's scripts directory
+       — it restarts the app, waits for readiness, and runs `go test ./...`.
+    2. Check `docker compose logs app` and exercise the page or endpoint.
+
+    A failure is yours. Fix it and re-run. Still do not commit — the controller
+    does that.
+```
+
+## Fix dispatches — add this block
+
+When the batch verify or a review sends work back:
+
+```
+    ## What needs fixing
+
+    [The failing test output, or the review findings, verbatim.]
+
+    Fix only these. Then report as above — do not verify or commit unless this
+    prompt says you are running solo.
 ```

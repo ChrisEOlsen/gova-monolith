@@ -2,8 +2,9 @@
 # Shared setup steps for the GOVA installers.
 #
 # `install-claude.sh` and `install-opencode.sh` differ only in which harness
-# they configure — prerequisites, `.env`, the Docker build and the MCP binary
-# check are identical, and were duplicated between them until this file existed.
+# they configure — prerequisites, `.env`, the Docker build and the builder
+# binary check are identical, and were duplicated between them until this file
+# existed.
 # A duplicated installer is a drifting installer: the APP_NAME normalisation
 # below was added to one copy after a real failure, and a second copy would
 # have silently kept the bug.
@@ -106,11 +107,11 @@ gova_setup_env() {
         ok "SESSION_SECRET already set"
     fi
 
-    CONTAINER_NAME="${APP_NAME}-mcp-1"
-    ok "MCP container: $CONTAINER_NAME"
+    CONTAINER_NAME="${APP_NAME}-builder-1"
+    ok "Builder container: $CONTAINER_NAME"
 }
 
-# gova_build_containers SCRIPT_DIR — build and start app + mcp.
+# gova_build_containers SCRIPT_DIR — build and start app + builder.
 gova_build_containers() {
     local script_dir="$1"
     step "Building Docker image"
@@ -118,15 +119,16 @@ gova_build_containers() {
     ok "Container up"
 }
 
-# gova_verify_mcp_binary CONTAINER — the mcp image embeds its templates at build
-# time, so a missing binary here means the build, not the runtime, is broken.
-gova_verify_mcp_binary() {
-    local container="$1"
-    step "Verifying MCP server binary"
+# gova_verify_builder CONTAINER — the builder image embeds its templates at
+# build time, so a binary that will not run means the build, not the runtime,
+# is broken.
+gova_verify_builder() {
+    local container="$1" version
+    step "Verifying the gova builder"
     sleep 2
-    if docker exec "$container" /usr/local/bin/mcp-server </dev/null >/dev/null 2>&1; then
-        ok "MCP server binary present at /usr/local/bin/mcp-server"
+    if version=$(docker exec "$container" /usr/local/bin/gova version 2>/dev/null); then
+        ok "gova $version ready — run ./gova help"
     else
-        fail "MCP server binary not found. Run: docker compose logs mcp"
+        fail "the gova binary would not run. Check: docker compose logs builder"
     fi
 }

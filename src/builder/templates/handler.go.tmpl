@@ -1,17 +1,18 @@
 package handlers
 
 import (
-	"database/sql"
 	"net/http"
+
 	"gova/app/cache"
+	"gova/app/db"
 )
 
-func {{.PascalName}}{{.Method}}(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc {
+func {{.PascalName}}{{.Method}}(database *db.DB, appCache *cache.Cache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// TODO: implement handler logic
+		// TODO: implement handler logic.
 		// Use model methods — never write raw SQL here.
-		// Auth (if required) is enforced by the RequireAuth route wrap in
-		// routes_gen.go — do not re-check it here.
+		// Auth, if required, is enforced by the RequireAuth wrap in
+		// routes_gen.go; do not re-check it.
 		jsonOK(w, nil)
 	}
 }

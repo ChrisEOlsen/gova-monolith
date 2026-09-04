@@ -1,12 +1,246 @@
 {
   "api_version": "1.0.0",
-  "hash": "sha256:3c45ccf02f770d8e1bf90117ffa805d414e500ab8d2d8add1e227e3e63467054",
-  "generated_at": "2026-08-22T23:50:05Z",
-  "template": {
-    "version": "2026-08-22.1",
-    "fingerprint": "sha256:0663822677091a40e98930ddf4b012698dc1f004e0e4d6c4c58c65dccb5000a3"
-  },
-  "models": [],
-  "endpoints": [],
-  "pages": []
+  "hash": "sha256:480fc65eaf5e305c7fec7618f314304fc0877a342cb960ba325c3ab96042694e",
+  "generated_at": "2026-09-04T01:15:54Z",
+  "builder_version": "2026-09-03.1",
+  "models": [
+    {
+      "name": "user",
+      "table": "users",
+      "fields": [
+        {
+          "name": "id",
+          "type": "int",
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "nullable": false,
+          "format": "email"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp",
+          "nullable": false
+        }
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "handler": "LoginPOST",
+      "deps": [
+        "db"
+      ],
+      "auth": false,
+      "kind": "auth_login",
+      "summary": "Sign in and receive a session cookie",
+      "request": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "nullable": false,
+            "format": "email"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      "response": {
+        "shape": "object",
+        "model": "user"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login_token",
+      "handler": "MobileLoginPOST",
+      "deps": [
+        "db"
+      ],
+      "auth": false,
+      "kind": "mobile_login",
+      "summary": "Sign in and receive a bearer token",
+      "request": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "nullable": false,
+            "format": "email"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      "response": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "token",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/logout",
+      "handler": "LogoutPOST",
+      "deps": [],
+      "auth": false,
+      "kind": "auth_logout",
+      "summary": "Clear this browser's session cookie",
+      "response": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "status",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/logout_all",
+      "handler": "LogoutAllPOST",
+      "deps": [
+        "db"
+      ],
+      "auth": true,
+      "kind": "auth_logout_all",
+      "summary": "Sign out of every device",
+      "response": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "status",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/auth/logout_token",
+      "handler": "MobileLogoutDELETE",
+      "deps": [
+        "db"
+      ],
+      "auth": false,
+      "kind": "mobile_logout",
+      "summary": "Revoke the bearer token in the Authorization header",
+      "response": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "status",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "handler": "MeGET",
+      "deps": [
+        "db"
+      ],
+      "auth": true,
+      "kind": "auth_me",
+      "summary": "The signed-in user",
+      "response": {
+        "shape": "object",
+        "model": "user"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/me_token",
+      "handler": "MobileMeGET",
+      "deps": [
+        "db"
+      ],
+      "auth": false,
+      "kind": "mobile_me",
+      "summary": "The user owning the bearer token",
+      "response": {
+        "shape": "object",
+        "model": "user"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "handler": "RegisterPOST",
+      "deps": [
+        "db"
+      ],
+      "auth": false,
+      "kind": "register",
+      "summary": "Create an account and sign in",
+      "request": {
+        "shape": "object",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "email",
+            "type": "string",
+            "nullable": false,
+            "format": "email"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      "response": {
+        "shape": "object",
+        "model": "user"
+      }
+    }
+  ],
+  "pages": [
+    {
+      "path": "/login",
+      "file": "login",
+      "title": "Sign In",
+      "auth": false
+    },
+    {
+      "path": "/register",
+      "file": "register",
+      "title": "Create Account",
+      "auth": false
+    }
+  ]
 }

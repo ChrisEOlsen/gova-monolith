@@ -40,18 +40,14 @@ If `docker-compose.yml` does not have a `tunnel:` service, append under `service
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
 ```
 
-`pull_policy: always` is load-bearing, not tidiness. `:latest` is only a tag —
-`docker compose up -d` resolves it from the **local image cache** and never
-checks the registry if any copy is already there. A machine that pulled
-`cloudflared` once months ago runs that build forever while the compose file
-reads `latest`. cloudflared is the wrong image to let rot: Cloudflare's edge
-refuses connections from clients that fall too far behind, so the failure
-arrives later as a tunnel that stops registering, with nothing in the compose
-file pointing at the cause. `always` re-resolves the tag on every `up`.
+`pull_policy: always` is load-bearing. `:latest` is only a tag —
+`docker compose up -d` resolves it from the local image cache and never checks
+the registry if any copy is there, so a machine that pulled cloudflared once
+runs that build forever. Cloudflare's edge refuses clients that fall too far
+behind, and the failure arrives later as a tunnel that stops registering.
 
-Do **not** pin a version number here instead. This is a template — a pin
-written today is the outdated version every project inherits tomorrow, which is
-the exact failure this line prevents.
+Do **not** pin a version instead: this is a template, and a pin written today is
+the outdated version every project inherits tomorrow.
 
 ---
 

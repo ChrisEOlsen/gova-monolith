@@ -49,7 +49,7 @@ func TestWithWorkspaceLock_LostUpdateClosed(t *testing.T) {
 			endpoint := Endpoint{
 				Method: "GET", Path: "/api/v1/" + toPlural(name),
 				Handler: toPascal(name) + "ListGET",
-				Deps:    []string{"read", "write", "cache"}, Kind: "list",
+				Deps:    []string{"db", "cache"}, Kind: "list",
 			}
 			errCh <- updateManifestAt(apiPath, handlersDir, time.Now(),
 				[]Model{model}, []Endpoint{endpoint}, nil)

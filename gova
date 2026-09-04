@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# gova — the GOVA application builder.
+#
+# A thin wrapper around the CLI in the `builder` container, which holds the
+# compiled binary, the embedded templates, and the bind mounts for /src and
+# /data. Run it from anywhere in the repo.
+#
+#   ./gova inspect
+#   ./gova sql -query "CREATE TABLE projects (...)"
+#   ./gova resource -name project -fields name:string,status:string
+#   ./gova help
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+exec docker compose exec -T builder /usr/local/bin/gova "$@"

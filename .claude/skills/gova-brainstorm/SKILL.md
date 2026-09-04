@@ -10,7 +10,7 @@ Help turn `SEED.md` into a fully formed design and spec through natural collabor
 Start by understanding the current project context, classify the scale of the work, then ask batched questions to refine the idea. Once you understand what you're building, present the design and get user approval.
 
 <HARD-GATE>
-Do NOT invoke any implementation skill, write any code, or call any MCP scaffold tool until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
+Do NOT invoke any implementation skill, write any code, or call any gova command until you have presented a design and the user has approved it. This applies to EVERY project regardless of perceived simplicity.
 </HARD-GATE>
 
 ## Scale Gate — Run This First
@@ -18,7 +18,7 @@ Do NOT invoke any implementation skill, write any code, or call any MCP scaffold
 Before asking anything, classify the work. This decides which path you take, and it is the difference between a 6-round-trip design cycle and a 2-round-trip one.
 
 **Small** — a bugfix, a constraint or convention change, one endpoint, one model, or a change confined to existing infrastructure. No new subsystem.
-→ **Skip the spec document.** Use plan mode for the dialogue (Claude Code's plan mode, or opencode's `plan` agent) — it is harness-enforced read-only, so the HARD-GATE holds mechanically rather than on your promise. Batch your questions, get the approach approved, then invoke `gova-writing-plans` for a short plan. Do not write to `docs/superpowers/specs/`.
+→ **Skip the spec document.** Use plan mode for the dialogue (Claude Code's plan mode, or opencode's `plan` agent) — it is harness-enforced read-only, so the HARD-GATE holds mechanically rather than on your promise. Batch your questions, get the approach approved, then invoke `gova-writing-plans` for a short plan. Do not write to `docs/specs/`.
 
 **Standard** — a new feature with its own table, page, and routes; or two or more features that interact.
 → Full path below: questions → approaches → design → spec doc → plan.
@@ -28,18 +28,18 @@ Before asking anything, classify the work. This decides which path you take, and
 
 If the work sits between Small and Standard, take Small. A short plan that turns out to need a spec costs one extra round-trip; a full spec for a 100-line change costs six.
 
-The HARD-GATE binds every path: no code, no MCP scaffold call, until the user approves the design (Standard/Large) or the plan (Small).
+The HARD-GATE binds every path: no code, no gova command, until the user approves the design (Standard/Large) or the plan (Small).
 
 ## Checklist
 
 You MUST create a task for each of these items and complete them in order. Items marked **[Standard+]** are skipped on the Small path.
 
-1. **Explore project context** — read `SEED.md`, check for an existing `docs/superpowers/specs/` or `docs/superpowers/plans/` history, check recent commits
+1. **Explore project context** — read `SEED.md`, check for an existing `docs/specs/` or `docs/plans/` history, check recent commits
 2. **Classify scale** — Small, Standard, or Large, per the Scale Gate above. State which one you picked and why, in one line.
 3. **Ask clarifying questions** — batched, not serial (see below); understand purpose/constraints/success criteria
 4. **[Standard+] Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval
-6. **[Standard+] Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
+6. **[Standard+] Write design doc** — save to `docs/specs/YYYY-MM-DD-<topic>-design.md` and commit
 7. **[Standard+] Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
 8. **[Standard+] User reviews written spec** — ask user to review the spec file before proceeding
 9. **Transition to implementation** — invoke the `gova-writing-plans` skill to create an implementation plan
@@ -57,7 +57,7 @@ You MUST create a task for each of these items and complete them in order. Items
 - Group a batch by theme so the answers are independently meaningful — data model in one batch, auth and integrations in the next. Do not batch a question whose options depend on the answer to another question in the same batch; that one waits for the following round.
 - Prefer multiple choice when possible, but open-ended is fine — put it in the same batch as a plain question.
 - Two batches is a normal budget for a Standard project, one for a Small one. If you are reaching for a third, you are designing by interview instead of proposing something concrete and letting the user correct it.
-- Focus on understanding: purpose, constraints, success criteria, which SEED.md checkboxes (auth, payments) actually apply
+- Focus on understanding: purpose, constraints, success criteria, which SEED.md checkboxes actually apply. Auth is always present — the question is which endpoints and pages require it, not whether to build it.
 
 **Exploring approaches — [Standard+]:**
 
@@ -77,11 +77,11 @@ You MUST create a task for each of these items and complete them in order. Items
 
 - Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood independently
 - For each model/page, you should be able to answer: what does it do, how do you use it, and what does it depend on?
-- Map each feature to the MCP scaffold tool that will build it (`scaffold_resource` for a full-CRUD resource — list/detail/create/update/delete + sort/filter; `scaffold_list` for a read-only list; `create_model`+`create_page` for a custom page; `scaffold_auth` for cookie+bearer auth) — this becomes the plan's task list later
+- Map each feature to the `gova` command that will build it — `gova resource` for a CRUD resource, `gova model` + `gova page` + `gova handler` for anything else. This becomes the plan's task list. Auth is not a feature to map: it ships with the template.
 
 **Working in existing codebases:**
 
-- Explore the current structure before proposing changes (`inspect_app` via the `gova-builder` MCP if this is an incremental build on an existing app). Follow existing patterns.
+- Explore the current structure before proposing changes (`./gova inspect` if this is an incremental build on an existing app). Follow existing patterns.
 - Don't propose unrelated refactoring. Stay focused on what serves the current goal.
 
 ## After the Design
@@ -92,7 +92,7 @@ Everything between here and Implementation is **[Standard+]**.
 
 **Documentation:**
 
-- Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
+- Write the validated design (spec) to `docs/specs/YYYY-MM-DD-<topic>-design.md`
 - Commit the design document to git
 
 **Spec Self-Review:**

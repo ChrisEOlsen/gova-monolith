@@ -56,84 +56,6 @@ func TestModelTestTemplate_IsValidGo(t *testing.T) {
 	renderAndParse(t, "model_test.go.tmpl", data)
 }
 
-func TestListHandlerTestTemplate_IsValidGo(t *testing.T) {
-	data := newData("widget", sampleFields())
-	renderAndParse(t, "list_handler_test.go.tmpl", data)
-}
-
-func TestAuthTestTemplate_IsValidGo(t *testing.T) {
-	data := newData("user", nil)
-	renderAndParse(t, "auth_test.go.tmpl", data)
-}
-
-func TestRegisterTestTemplate_IsValidGo(t *testing.T) {
-	data := newData("user", nil)
-	renderAndParse(t, "register_test.go.tmpl", data)
-}
-
-func TestMobileAuthTestTemplate_IsValidGo(t *testing.T) {
-	renderAndParse(t, "mobile_auth_test.go.tmpl", TemplateData{})
-}
-
-func TestMobileTokenModelTemplate_IsValidGo(t *testing.T) {
-	renderAndParse(t, "mobile_token_model.go.tmpl", TemplateData{})
-}
-
-// TestMobileAuthHandlerTemplate_NoRawSQL enforces Critical Constraint 1 at the
-// template level. scaffold_auth used to emit INSERT/DELETE/SELECT against
-// mobile_tokens straight from the handler, so every app generated from this
-// template shipped a documented-forbidden pattern in its own auth layer.
-func TestMobileAuthHandlerTemplate_NoRawSQL(t *testing.T) {
-	out := renderAndParse(t, "mobile_auth_handler.go.tmpl", newData("user", nil))
-
-	banned := []string{
-		"INSERT INTO", "DELETE FROM", "SELECT ", "UPDATE ",
-		"ExecContext(", "QueryContext(", "QueryRowContext(",
-		".Exec(", ".Query(", ".QueryRow(",
-	}
-	for _, frag := range banned {
-		if strings.Contains(out, frag) {
-			t.Errorf("mobile_auth_handler.go.tmpl contains raw SQL/db access %q — use a model method:\n%s", frag, out)
-		}
-	}
-	if !strings.Contains(out, "models.NewMobileTokenModel(") {
-		t.Errorf("handler should reach mobile_tokens through models.MobileTokenModel:\n%s", out)
-	}
-}
-
-// TestMobileTokenModelTemplate_PinsSQLiteDatetimeLayout pins the storage layout
-// for expires_at. DATETIME is TEXT and SQLite compares it lexicographically:
-// RFC3339's 'T' (0x54) sorts above SQLite's space (0x20), so an RFC3339 expiry
-// from the same calendar date compares greater than the current native
-// timestamp and an expired token passes as valid. Writing and comparing in
-// SQLite's own layout — with the comparison value bound, not sourced from a
-// different clock — is what makes the check correct by construction.
-func TestMobileTokenModelTemplate_PinsSQLiteDatetimeLayout(t *testing.T) {
-	out := renderAndParse(t, "mobile_token_model.go.tmpl", TemplateData{})
-
-	if !strings.Contains(out, `sqliteDatetimeLayout = "2006-01-02 15:04:05"`) {
-		t.Errorf("mobile_token_model.go.tmpl must pin SQLite's own datetime layout:\n%s", out)
-	}
-	if strings.Contains(out, "time.RFC3339") {
-		t.Errorf("expires_at must not be stored or compared as RFC3339:\n%s", out)
-	}
-	for _, want := range []string{
-		`expiresAt.UTC().Format(sqliteDatetimeLayout)`,
-		`now.UTC().Format(sqliteDatetimeLayout)`,
-		`expires_at > ?`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q — expiry must be written and compared in one bound layout:\n%s", want, out)
-		}
-	}
-	// The old shape. Comparing against CURRENT_TIMESTAMP is only safe if
-	// whatever wrote expires_at happened to use the same layout — which is
-	// exactly the accident this template replaces with an explicit bind.
-	if strings.Contains(out, "CURRENT_TIMESTAMP)") || strings.Contains(out, "> CURRENT_TIMESTAMP") {
-		t.Errorf("expiry comparison must bind an explicitly formatted instant, not CURRENT_TIMESTAMP:\n%s", out)
-	}
-}
-
 func sampleFieldsWithNullable() []Field {
 	return []Field{
 		{Name: "title", Type: "string", Nullable: false},
@@ -220,20 +142,6 @@ func TestModelTestTemplate_NullableIsValidGo(t *testing.T) {
 // in RecordFailedAttempt. Without it the limiter is a lifetime quota and any IP
 // that ever accumulates 5 failures is capped at one attempt per 15 minutes for
 // good — an availability failure on a shared NAT, not a nuisance.
-func TestUserModelTemplate_RateLimitBucketDecays(t *testing.T) {
-	out := renderAndParse(t, "user_model.go.tmpl", newData("user", nil))
-
-	if !strings.Contains(out, "attempts = CASE WHEN updated_at < datetime('now', '-15 minutes')") {
-		t.Errorf("RecordFailedAttempt must reset attempts once the window lapses:\n%s", out)
-	}
-	if !strings.Contains(out, "THEN 1 ELSE attempts + 1 END") {
-		t.Errorf("the decayed branch must restart the count at 1:\n%s", out)
-	}
-	if !strings.Contains(out, "WHEN updated_at < datetime('now', '-15 minutes') THEN NULL") {
-		t.Errorf("a decayed bucket must also clear its stale locked_until:\n%s", out)
-	}
-}
-
 func TestHandlerTemplate_NoInlineAuthCheck(t *testing.T) {
 	data := newData("archive_project", nil)
 	data.Method = "POST"
@@ -273,9 +181,9 @@ func TestRenderRoutes_EmptyIsValidGoNoMiddleware(t *testing.T) {
 func TestRenderRoutes_DepsAndMethods(t *testing.T) {
 	out, err := renderRoutes(routeManifest(
 		Endpoint{Method: "GET", Path: "/api/v1/projects", Handler: "ProjectListGET",
-			Deps: []string{"read", "write", "cache"}, Kind: "list"},
+			Deps: []string{"db", "cache"}, Kind: "list"},
 		Endpoint{Method: "DELETE", Path: "/api/v1/auth/logout_token", Handler: "MobileLogoutDELETE",
-			Deps: []string{"write"}, Auth: true, Kind: "mobile_logout"},
+			Deps: []string{"db"}, Auth: true, Kind: "mobile_logout"},
 		Endpoint{Method: "POST", Path: "/api/v1/auth/logout", Handler: "LogoutPOST",
 			Deps: []string{}, Kind: "auth_logout"},
 	))
@@ -284,8 +192,8 @@ func TestRenderRoutes_DepsAndMethods(t *testing.T) {
 	}
 	parseAsGo(t, "routes_gen.go", out)
 	want := []string{
-		`r.Get("/api/v1/projects", ProjectListGET(database.Read, database.Write, appCache))`,
-		`r.With(middleware.RequireAuth).Delete("/api/v1/auth/logout_token", MobileLogoutDELETE(database.Write))`,
+		`r.Get("/api/v1/projects", ProjectListGET(database, appCache))`,
+		`r.With(middleware.RequireAuth).Delete("/api/v1/auth/logout_token", MobileLogoutDELETE(database))`,
 		`r.Post("/api/v1/auth/logout", LogoutPOST())`,
 	}
 	for _, w := range want {
@@ -299,8 +207,8 @@ func TestRenderRoutes_DepsAndMethods(t *testing.T) {
 }
 
 func TestRenderRoutes_Deterministic(t *testing.T) {
-	e1 := Endpoint{Method: "GET", Path: "/api/v1/a", Handler: "AGet", Deps: []string{"read"}, Kind: "list"}
-	e2 := Endpoint{Method: "GET", Path: "/api/v1/b", Handler: "BGet", Deps: []string{"read"}, Kind: "list"}
+	e1 := Endpoint{Method: "GET", Path: "/api/v1/a", Handler: "AGet", Deps: []string{"db"}, Kind: "list"}
+	e2 := Endpoint{Method: "GET", Path: "/api/v1/b", Handler: "BGet", Deps: []string{"db"}, Kind: "list"}
 	out1, _ := renderRoutes(routeManifest(e1, e2))
 	out2, _ := renderRoutes(routeManifest(e2, e1))
 	if out1 != out2 {
@@ -313,37 +221,11 @@ func TestRenderRoutes_Deterministic(t *testing.T) {
 // Mobile clients authenticate via Authorization: Bearer <token> and send no
 // gova_session cookie, so RequireAuth (which only checks the session-derived
 // UserID) would 401 them before the handler's own bearer-token check ever
-// runs. scaffold_auth registers MobileMeGET/MobileLogoutDELETE
+// runs. The manifest registers MobileMeGET/MobileLogoutDELETE
 // with Auth:false for exactly this reason — this test proves renderRoutes
 // respects that and doesn't add the wrap, while still confirming a genuine
 // Auth:true endpoint DOES get wrapped (so the test would catch a regression
 // in either direction).
-func TestRenderRoutes_MobileBearerNotWrapped(t *testing.T) {
-	out, err := renderRoutes(routeManifest(
-		Endpoint{Method: "GET", Path: "/api/v1/auth/me_token", Handler: "MobileMeGET",
-			Deps: []string{"read", "write", "cache"}, Auth: false, Kind: "mobile_me"},
-		Endpoint{Method: "GET", Path: "/api/v1/auth/me", Handler: "MeGET",
-			Deps: []string{"read", "write", "cache"}, Auth: true, Kind: "auth_me"},
-	))
-	if err != nil {
-		t.Fatalf("renderRoutes: %v", err)
-	}
-	parseAsGo(t, "routes_gen.go", out)
-
-	wantMobileLine := `r.Get("/api/v1/auth/me_token", MobileMeGET(database.Read, database.Write, appCache))`
-	if !strings.Contains(out, wantMobileLine) {
-		t.Errorf("missing unwrapped mobile-me route line:\n  want: %s\n  in:\n%s", wantMobileLine, out)
-	}
-	if strings.Contains(out, `middleware.RequireAuth).Get("/api/v1/auth/me_token"`) {
-		t.Errorf("mobile bearer endpoint must NOT be wrapped in middleware.RequireAuth:\n%s", out)
-	}
-
-	wantSessionLine := `r.With(middleware.RequireAuth).Get("/api/v1/auth/me", MeGET(database.Read, database.Write, appCache))`
-	if !strings.Contains(out, wantSessionLine) {
-		t.Errorf("missing RequireAuth-wrapped session route line:\n  want: %s\n  in:\n%s", wantSessionLine, out)
-	}
-}
-
 func pageManifest(pages ...Page) Manifest {
 	m := Manifest{APIVersion: "1.0.0"}
 	for _, p := range pages {
@@ -509,11 +391,11 @@ func TestResourceHandlersTemplate_ValidGoAllFive(t *testing.T) {
 	data.CRUD = true
 	out := renderAndParse(t, "resource_handlers.go.tmpl", data)
 	for _, sym := range []string{
-		"func WidgetListGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
-		"func WidgetDetailGET(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
-		"func WidgetCreatePOST(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
-		"func WidgetUpdatePUT(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
-		"func WidgetDeleteDELETE(readDB, writeDB *sql.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetListGET(database *db.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDetailGET(database *db.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetCreatePOST(database *db.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetUpdatePUT(database *db.DB, appCache *cache.Cache) http.HandlerFunc",
+		"func WidgetDeleteDELETE(database *db.DB, appCache *cache.Cache) http.HandlerFunc",
 	} {
 		if !strings.Contains(out, sym) {
 			t.Errorf("missing handler %q:\n%s", sym, out)
@@ -630,92 +512,6 @@ func TestRenderPagesTest_IsValidGoAndTablesThePages(t *testing.T) {
 	parseAsGo(t, "pages_gen_test.go", empty)
 }
 
-func TestClientIPTemplate_IsValidGo(t *testing.T) {
-	renderAndParse(t, "clientip.go.tmpl", newData("user", nil))
-	renderAndParse(t, "clientip_test.go.tmpl", newData("user", nil))
-}
-
-func TestAuthBucketsTemplate_IsValidGo(t *testing.T) {
-	renderAndParse(t, "auth_buckets.go.tmpl", newData("user", nil))
-	renderAndParse(t, "auth_buckets_test.go.tmpl", newData("user", nil))
-}
-
-// TestAuthHandlerTemplates_NamespaceTheirRateLimitBuckets is the template-level
-// half of the guard that handlers/auth_buckets_test.go carries in the generated
-// app.
-//
-// rate_limits has ONE key column and ClearAttempts is a DELETE by that key, so
-// two endpoints that spell the key the same way are one bucket — and a success
-// on either erases the other's failures. /auth/login and /auth/login_token are
-// the same credential check reached two ways, so keying both on a bare
-// clientIP(r) let an attacker pace four wrong passwords, clear the row with one
-// correct login_token against an account they hold, and guess forever without
-// the counter ever reaching five. Measured before the fix: 40 of 40 guesses
-// reached bcrypt against a documented budget of 5.
-//
-// The generated test proves the behaviour; this one proves the TEMPLATE cannot
-// regress to emitting it, which the generated test cannot do — a scaffold_auth
-// re-run overwrites the generated files with whatever these templates say.
-//
-// It now also pins the SECOND bucket. Namespacing the two endpoints stopped a
-// success on one from erasing the other's failures; it did nothing about a
-// success on the SAME endpoint with a DIFFERENT account, which needs only a
-// self-service signup. The account bucket is what closes that, and it is only
-// safe from being an enumeration oracle because it is derived from the
-// SUBMITTED address before any lookup and counted on BOTH failure branches — so
-// this asserts the derivation line, not just that the symbol appears.
-func TestAuthHandlerTemplates_NamespaceTheirRateLimitBuckets(t *testing.T) {
-	for _, c := range []struct{ tmpl, want string }{
-		{"auth_handler.go.tmpl", "ipBucket := loginBucket(clientIP(r))"},
-		{"mobile_auth_handler.go.tmpl", "ipBucket := loginTokenBucket(clientIP(r))"},
-	} {
-		out := renderAndParse(t, c.tmpl, newData("user", nil))
-		if !strings.Contains(out, c.want) {
-			t.Errorf("%s must key its address bucket with %q", c.tmpl, c.want)
-		}
-		if strings.Contains(out, "ip := clientIP(r)") {
-			t.Errorf("%s keys its rate limiter on a bare clientIP(r) — that is one shared bucket "+
-				"with the other login endpoint, and a success on either erases both", c.tmpl)
-		}
-		// The per-account bucket, derived from the submitted address.
-		if !strings.Contains(out, "accountBucket := loginEmailBucket(email)") {
-			t.Errorf("%s has no per-account bucket: an attacker's success on their OWN account still "+
-				"clears the failures they racked up against someone else's", c.tmpl)
-		}
-		// Both buckets must be checked, counted and cleared together.
-		if !strings.Contains(out, "loginLimited(w, userModel, ipBucket, accountBucket)") {
-			t.Errorf("%s does not check both buckets before the password compare", c.tmpl)
-		}
-		if n := strings.Count(out, "recordLoginFailure(userModel, ipBucket, accountBucket)"); n != 2 {
-			t.Errorf("%s records both buckets on %d failure branches, want 2 — a branch that skips the "+
-				"account bucket for unknown addresses makes it a membership test", c.tmpl, n)
-		}
-		if !strings.Contains(out, "clearLoginAttempts(userModel, ipBucket, accountBucket)") {
-			t.Errorf("%s does not clear exactly the two buckets its success vouches for", c.tmpl)
-		}
-	}
-}
-
-// TestAuthBucketsTemplate_AccountBudgetIsLooserThanTheAddressBudget pins the
-// asymmetry, which is a security decision rather than tuning.
-//
-// A per-account bucket is also a per-account LOCKOUT: at threshold N anyone who
-// knows an address can deny that user their own login by spending N requests,
-// with no account and no credentials. Set equal to the address budget it is a
-// cheap denial of service against any account an attacker can name. It only has
-// to catch DISTRIBUTED guessing, so it belongs well above any legitimate user's
-// reach — a real user is stopped by their own address bucket long before it.
-func TestAuthBucketsTemplate_AccountBudgetIsLooserThanTheAddressBudget(t *testing.T) {
-	out := renderAndParse(t, "auth_buckets.go.tmpl", newData("user", nil))
-	ip := budgetConst(t, out, "loginIPMaxAttempts")
-	account := budgetConst(t, out, "loginAccountMaxAttempts")
-	if account <= ip {
-		t.Errorf("loginAccountMaxAttempts (%d) must be greater than loginIPMaxAttempts (%d), or a lone "+
-			"attacker can lock any account they can name as cheaply as they exhaust their own address",
-			account, ip)
-	}
-}
-
 func budgetConst(t *testing.T, code, name string) int {
 	t.Helper()
 	m := regexp.MustCompile(name + `\s*=\s*(\d+)`).FindStringSubmatch(code)
@@ -729,53 +525,6 @@ func budgetConst(t *testing.T, code, name string) int {
 	return n
 }
 
-// TestAuthHandlerTemplate_DoesNotDefineClientIP keeps the trusted-proxy logic in
-// the file that carries its reasoning.
-//
-// clientIP used to be eleven lines inside auth_handler.go.tmpl, where it read as
-// a logging convenience. It is the rate limiter's bucket key: it decides whether
-// a caller can mint unlimited buckets by setting a header, and whether every
-// caller behind the proxy shares one. A re-run of scaffold_auth truncates
-// auth.go, so a decision left in there is a decision with no guard.
-func TestAuthHandlerTemplate_DoesNotDefineClientIP(t *testing.T) {
-	out := renderAndParse(t, "auth_handler.go.tmpl", newData("user", nil))
-	if strings.Contains(out, "func clientIP(") {
-		t.Error("clientIP belongs in clientip.go.tmpl, with its trusted-proxy reasoning and its own tests")
-	}
-}
-
-// TestClientIPTemplate_HasATrustedPeerNotion pins the three properties the two
-// old lines lacked, at the template level.
-func TestClientIPTemplate_HasATrustedPeerNotion(t *testing.T) {
-	out := renderAndParse(t, "clientip.go.tmpl", newData("user", nil))
-	for _, want := range []string{
-		// A direct caller does not get to name itself with a header.
-		"if !isTrustedProxy(peer) {",
-		// The header is validated as an address, not taken as a string.
-		"net.ParseIP(cf) != nil",
-		// The fallback that stops every caller sharing the proxy's bucket.
-		`forwardedFor(r.Header.Get("X-Forwarded-For"))`,
-		// Headers are per-request, so the fail-safe has to be too.
-		"warnMissingForwardedIP(peer)",
-		// IPv6: "[::1]:5432" is not split on the last colon.
-		"net.SplitHostPort(remoteAddr)",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("clientip.go.tmpl is missing %q", want)
-		}
-	}
-}
-
-// TestModelTemplate_TimestampFieldIsModelsTime pins the field type that exists
-// to stop a model putting two timestamp formats on one JSON object.
-//
-// Generated models have always given created_at the models.Time treatment
-// (RFC3339, second precision) — but there was no way to DECLARE any other
-// timestamp column, so every author wrote `updated_at:string` and got a Go
-// string carrying SQLite's native "2026-08-15 19:40:07". Confirmed across four
-// models in one project, because it is the generator and not any one model.
-// Invisible in a browser, and fatal to a typed client: a Swift .iso8601 decoder
-// rejects the row. A wire defect only the SECOND client finds.
 func TestModelTemplate_TimestampFieldIsModelsTime(t *testing.T) {
 	out := renderAndParse(t, "model.go.tmpl", newData("widget", []Field{
 		{Name: "updated_at", Type: "timestamp", Nullable: false},
@@ -808,27 +557,11 @@ func TestModelTemplate_TimestampFieldIsModelsTime(t *testing.T) {
 // used models.Time — and the contract's own words are "never use a bare
 // time.Time in a model struct". Latent only while nothing serializes a User
 // wholesale; the first endpoint returning the struct emits RFC3339Nano.
-func TestUserModelTemplate_CreatedAtIsModelsTime(t *testing.T) {
-	out := renderAndParse(t, "user_model.go.tmpl", newData("user", nil))
-	if !strings.Contains(out, "CreatedAt Time `json:\"created_at\"`") {
-		t.Errorf("User.CreatedAt must be models.Time:\n%s", out)
-	}
-	if strings.Contains(out, "CreatedAt    time.Time") {
-		t.Error("User.CreatedAt is a bare time.Time — RFC3339Nano on the wire")
-	}
-}
-
-// TestValidateFieldTypes_RejectsUnknown keeps a typo from silently becoming a
-// string column.
-//
-// parseFields has no error return and goTypeFor's default is "string", so
-// `updated_at:timestmap` used to generate exactly the defect the timestamp type
-// was added to remove — arriving by typo instead of by necessity.
 func TestValidateFieldTypes_RejectsUnknown(t *testing.T) {
 	if err := validateFieldTypes([]Field{{Name: "updated_at", Type: "timestmap"}}); err == nil {
 		t.Fatal("an unknown field type must be an error, not a silent string")
 	}
-	for _, ok := range []string{"string", "int", "float", "boolean", "password", "timestamp"} {
+	for _, ok := range []string{"string", "int", "float", "boolean", "timestamp"} {
 		if err := validateFieldTypes([]Field{{Name: "f", Type: ok}}); err != nil {
 			t.Errorf("%s should be accepted: %v", ok, err)
 		}

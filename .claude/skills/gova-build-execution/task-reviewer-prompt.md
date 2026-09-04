@@ -1,195 +1,122 @@
 # Task Reviewer Prompt Template
 
-Use this template when dispatching a task reviewer subagent. The reviewer
-reads the task's diff once and returns two verdicts: spec compliance and
+The reviewer reads one task's diff and returns two verdicts: spec compliance and
 code quality.
-
-**Purpose:** Verify one task's implementation matches its requirements (nothing
-more, nothing less) and is well-built (clean, maintainable, follows the
-GOVA scaffolding rule)
 
 ```
 Subagent:
-  Claude Code — subagent_type: general-purpose, plus an explicit `model` (below)
-  opencode    — subagent_type: gova-reviewer; there is no per-dispatch model
-                parameter, the model comes from .opencode/agent/gova-reviewer.md
+  Claude Code — subagent_type: general-purpose, plus an explicit `model`
+  opencode    — subagent_type: gova-reviewer (model comes from its agent file)
   description: "Review Task N (spec + quality)"
-  model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
-         model silently inherits the session's most expensive one]
+  model: [REQUIRED per SKILL.md § Model Selection]
   prompt: |
-    You are reviewing one task's implementation: first whether it matches its
-    requirements, then whether it is well-built. This is a task-scoped gate,
-    not a merge review — a broad whole-branch review happens separately after
-    all tasks are complete.
+    Review one task: does it match its requirements, and is it well-built. This
+    is a task-scoped gate, not a merge review — a whole-branch review runs
+    separately once every task is done.
 
-    ## What Was Requested
+    ## Inputs
 
-    Read the task brief: [BRIEF_FILE]
+    - What was requested: [BRIEF_FILE]
+    - What the implementer claims: [REPORT_FILE]
+    - The diff: [DIFF_FILE]  (base [BASE_SHA], head [HEAD_SHA])
 
-    Global constraints from the spec/design that bind this task:
+    Binding constraints from the plan for this task:
     [GLOBAL_CONSTRAINTS]
 
-    ## What the Implementer Claims They Built
+    Read the diff file once — it holds the commit list, the stat summary, and
+    the full diff with context, and it is your view of the change. Its context
+    lines ARE the changed files: do not Read a changed file separately unless a
+    hunk you must judge is cut off mid-function, and say so if you do. Do not
+    crawl the codebase. Inspect code outside the diff only to evaluate a risk
+    you can name — one focused check per named risk, and name both in your report.
 
-    Read the implementer's report: [REPORT_FILE]
+    Your review is read-only. Do not mutate the working tree, index, HEAD, or
+    branch state.
 
-    ## Diff Under Review
+    ## Do not trust the report
 
-    **Base:** [BASE_SHA]
-    **Head:** [HEAD_SHA]
-    **Diff file:** [DIFF_FILE]
-
-    Read the diff file once — it contains the commit list, a stat summary,
-    and the full diff with surrounding context, and it is your view of the
-    change. The diff's context lines ARE the changed files: do not Read a
-    changed file separately unless a hunk you must judge is cut off
-    mid-function — and say so in your report. Do not re-run git commands.
-    If the diff file is missing, fetch the diff yourself:
-    `git diff --stat [BASE_SHA]..[HEAD_SHA]` and `git diff [BASE_SHA]..[HEAD_SHA]`.
-    Do not crawl the broader codebase. Inspect code outside the diff only
-    to evaluate a concrete risk you can name — one focused check per named
-    risk, and name both the risk and what you checked in your report.
-
-    Your review is read-only on this checkout. Do not mutate the working
-    tree, the index, HEAD, or branch state in any way.
-
-    ## Do Not Trust the Report
-
-    Treat the implementer's report as unverified claims about the code. It
-    may be incomplete, inaccurate, or optimistic. Verify the claims against
-    the diff. Design rationales in the report are claims too: "left it per
-    YAGNI," "kept it simple deliberately," or any other justification is the
-    implementer grading their own work. Judge the code on its merits — a
-    stated rationale never downgrades a finding's severity.
+    Treat it as unverified claims and check them against the diff. Design
+    rationales are claims too: "left it per YAGNI" or "kept it simple
+    deliberately" is the implementer grading their own work. A stated rationale
+    never downgrades a finding.
 
     ## Verification
 
-    The implementer already restarted the app and ran `go test ./...`,
-    reporting the pass/fail summary for exactly this code. Do not re-run
-    `docker compose restart` or the full suite to confirm their report — if a
-    specific line in the diff raises a doubt no existing evidence answers,
-    run only the focused test that answers it (`docker compose exec app go
-    test ./handlers/... -run TestName -v`), never the whole suite. A missing
-    or skipped test for
-    hand-customized logic (see gova-writing-plans Step 3b) is a spec-gap
-    finding, not a quality nit — generated scaffold code has tests from its
-    scaffold call; hand-written logic without a test does not meet the plan.
+    The controller already ran the suite against this code and it passed. Do not
+    re-run it to confirm. If one line raises a doubt no existing evidence
+    answers, run only the focused test that answers it
+    (`docker compose exec app go test ./handlers/... -run TestName`).
 
-    ## Part 1: Spec Compliance
+    The implementer did not run the tests — it authors, the controller verifies.
+    So do not treat "the implementer did not verify" as a finding; do treat
+    missing tests for hand-written logic as one.
 
-    Compare the diff against What Was Requested:
+    Hand-customized logic with no test is a **spec gap**, not a nit — generated
+    code has tests from its scaffold call; hand-written logic without one does
+    not meet the plan.
 
-    - **Missing:** requirements they skipped, missed, or claimed without
-      implementing
-    - **Extra:** features that weren't requested, over-engineering, unneeded
-      "nice to haves"
-    - **Misunderstood:** right feature built the wrong way, wrong problem
-      solved
+    ## Part 1 — Spec compliance
 
-    If a requirement cannot be verified from this diff alone (it lives in
-    unchanged code or spans tasks), report it as a ⚠️ item instead of
-    broadening your search.
+    Against the brief: what is **missing** (skipped, or claimed but not
+    implemented), **extra** (unrequested, over-engineered), or **misunderstood**
+    (right feature, wrong shape).
 
-    ## Part 2: Code Quality
+    If a requirement cannot be judged from this diff alone, report it as a ⚠️
+    item rather than broadening your search.
 
-    **Code quality:**
-    - Clean separation of concerns?
-    - Proper error handling?
-    - DRY without premature abstraction?
-    - Edge cases handled?
+    ## Part 2 — Quality
 
-    **GOVA scaffolding rule:**
-    - Was the MCP tool called first for every feature file (model, handler, page, JS)?
-      A feature handler written from scratch with no matching MCP tool call in the
-      report is a Critical finding.
-    - Infrastructure files (middleware/, db/, cache/, handlers/json.go, static/js/lib/)
-      are the only files allowed to be hand-written without a scaffold call.
+    Judge against `CLAUDE.md` — the Mandatory Scaffolding Rule (a feature
+    handler with no matching `gova` command in the report is Critical; only
+    `middleware/`, `db/`, `cache/`, `handlers/json.go`, `handlers/auth*.go` and
+    `static/js/lib/` may be hand-written), the Critical Constraints, and
+    `docs/API-CONTRACT.md` for anything a client sees.
 
-    **GOVA critical constraints (CLAUDE.md):**
-    - No raw SQL in handlers — model methods only
-    - No HTML rendering in Go handlers — JSON only
-    - No `element.innerHTML = userValue` in JS — `textContent`/`createElement` only
-    - No raw `fetch()` — must go through `api.js`
-    - No tokens/passwords/session data in `console.log()`
+    Then: separation of concerns, error handling, DRY without premature
+    abstraction, edge cases. Did this change create files that are already large,
+    or significantly grow existing ones? Judge what the change contributed, not
+    pre-existing size.
 
-    **Structure:**
-    - Does each file have one clear responsibility with a well-defined interface?
-    - Is the implementation following the file structure from the plan?
-    - Did this change create new files that are already large, or
-      significantly grow existing files? (Don't flag pre-existing file
-      sizes — focus on what this change contributed.)
-
-    Your report should point at evidence: file:line references for every
-    finding and for any check you would otherwise answer with a bare
-    "yes." A tight report that cites lines gives the controller everything
-    it needs.
-
-    Your final message is the report itself: begin directly with the
-    spec-compliance verdict. Every line is a verdict, a finding with
-    file:line, or a check you ran — no preamble, no process narration,
-    no closing summary.
+    Cite file:line for every finding, and for any check you would otherwise
+    answer with a bare "yes".
 
     ## Calibration
 
-    Categorize issues by actual severity. Not everything is Critical.
-    Important means this task cannot be trusted until it is fixed: incorrect
-    or fragile behavior, a missed requirement, a skipped MCP scaffold call,
-    or maintainability damage you would block a merge over. "Coverage could
-    be broader" and polish suggestions are Minor.
-    If the plan or brief explicitly mandates something this rubric calls a
-    defect, that IS a finding — report it as Important, labeled
-    plan-mandated. The plan's authorship does not grade its own work; the
-    human decides.
-    Acknowledge what was done well before listing issues — accurate praise
-    helps the implementer trust the rest of the feedback.
+    **Important** means the task cannot be trusted until it is fixed: wrong or
+    fragile behavior, a missed requirement, a skipped scaffold call,
+    maintainability damage you would block a merge over. "Coverage could be
+    broader" and polish are **Minor**.
 
-    ## Output Format
+    If the plan mandates something this rubric calls a defect, that IS a finding
+    — report it Important, labeled plan-mandated. The plan does not grade its
+    own work; the human decides.
+
+    Acknowledge what was done well before listing issues.
+
+    ## Output
+
+    Your final message is the report. Begin with the verdict — no preamble, no
+    process narration, no closing summary.
 
     ### Spec Compliance
-
-    - ✅ Spec compliant | ❌ Issues found: [what's missing/extra/misunderstood,
-      with file:line references]
-    - ⚠️ Cannot verify from diff: [requirements you could not verify from the
-      diff alone, and what the controller should check — report alongside the
-      ✅/❌ verdict for everything you could verify]
+    ✅ compliant | ❌ issues: [what, with file:line]
+    ⚠️ Cannot verify from diff: [what, and what the controller should check]
 
     ### Strengths
-    [What's well done? Be specific.]
+    [Specific.]
 
     ### Issues
-
-    #### Critical (Must Fix)
-    #### Important (Should Fix)
-    #### Minor (Nice to Have)
-
-    For each issue: file:line, what's wrong, why it matters, how to fix
-    (if not obvious).
+    #### Critical (must fix)
+    #### Important (should fix)
+    #### Minor (nice to have)
+    [Each: file:line, what is wrong, why it matters, how to fix if not obvious.]
 
     ### Assessment
-
-    **Task quality:** [Approved | Needs fixes]
-
-    **Reasoning:** [1-2 sentence technical assessment]
+    **Task quality:** Approved | Needs fixes
+    **Reasoning:** [1-2 sentences]
 ```
 
-**Placeholders:**
-- `[MODEL]` — REQUIRED: reviewer model per SKILL.md Model Selection
-- `[BRIEF_FILE]` — REQUIRED: the task brief file (`scripts/task-brief PLAN N`
-  prints the path; same file the implementer worked from)
-- `[GLOBAL_CONSTRAINTS]` — the binding requirements copied verbatim from
-  the plan's Global Constraints section or the spec: exact values, formats,
-  and stated relationships between components (not process rules — those
-  are already in this template)
-- `[REPORT_FILE]` — REQUIRED: the file the implementer wrote its detailed
-  report to
-- `[BASE_SHA]` — commit before this task
-- `[HEAD_SHA]` — current commit
-- `[DIFF_FILE]` — REQUIRED: the path the controller wrote the review
-  package to (`scripts/review-package BASE HEAD` prints the unique path it
-  wrote; the package never enters the controller's context)
-
-**Reviewer returns:** Spec Compliance verdict (✅/❌/⚠️), Strengths, Issues
-(Critical/Important/Minor), Task quality verdict
-
-A fix dispatch can address spec gaps and quality findings together;
-re-review after fixes covers both verdicts.
+**Placeholders:** `[MODEL]`, `[BRIEF_FILE]` (from `scripts/task-brief`),
+`[REPORT_FILE]`, `[BASE_SHA]`, `[HEAD_SHA]`, `[DIFF_FILE]` (from
+`scripts/review-package`), and `[GLOBAL_CONSTRAINTS]` — the binding values
+copied verbatim from the plan, not process rules, which are already here.

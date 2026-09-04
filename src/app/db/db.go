@@ -2,12 +2,18 @@ package db
 
 import (
 	"database/sql"
+	_ "embed"
 	"fmt"
 	"runtime"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
+//go:embed schema.sql
+var schema string
+
+// DB holds two pools against one SQLite file: a single-connection writer, since
+// SQLite serializes writes anyway, and a multi-connection reader.
 type DB struct {
 	Write *sql.DB
 	Read  *sql.DB
@@ -15,13 +21,13 @@ type DB struct {
 
 func (d *DB) Close() error {
 	werr := d.Write.Close()
-	rerr := d.Read.Close()
-	if werr != nil {
-		return werr
+	if err := d.Read.Close(); err != nil {
+		return err
 	}
-	return rerr
+	return werr
 }
 
+// Open connects to path (default /data/app.db) and applies the auth schema.
 func Open(path string) (*DB, error) {
 	if path == "" {
 		path = "/data/app.db"
@@ -38,7 +44,12 @@ func Open(path string) (*DB, error) {
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
 	if err := writeDB.Ping(); err != nil {
+		writeDB.Close()
 		return nil, err
+	}
+	if _, err := writeDB.Exec(schema); err != nil {
+		writeDB.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
 	readDB, err := sql.Open("sqlite3", dsn)
@@ -51,6 +62,7 @@ func Open(path string) (*DB, error) {
 	readDB.SetMaxIdleConns(n)
 	if err := readDB.Ping(); err != nil {
 		writeDB.Close()
+		readDB.Close()
 		return nil, err
 	}
 

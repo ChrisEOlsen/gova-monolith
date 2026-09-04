@@ -9,11 +9,11 @@ RUN ARCH=$(uname -m) && \
         -o /usr/local/bin/tailwindcss \
     && chmod +x /usr/local/bin/tailwindcss
 
-# Build MCP server binary
+# Build the gova CLI
 WORKDIR /src/builder
 COPY src/builder/ ./
 RUN go mod tidy
-RUN CGO_ENABLED=1 go build -o /usr/local/bin/mcp-server .
+RUN CGO_ENABLED=1 go build -o /usr/local/bin/gova .
 
 # Pre-download app dependencies
 WORKDIR /src/app
@@ -28,7 +28,9 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 8080
 CMD ["/entrypoint.sh"]
 
-# ---- mcp: nothing but the compiled binary + glibc for the cgo sqlite3 driver ----
-FROM gcr.io/distroless/base-debian12 AS mcp
-COPY --from=builder /usr/local/bin/mcp-server /usr/local/bin/mcp-server
-ENTRYPOINT ["/usr/local/bin/mcp-server"]
+# ---- builder: the gova CLI, in a container that stays up so we can exec into it.
+# Kept separate from `app` so `docker compose restart app` cannot kill a
+# scaffold mid-write.
+FROM debian:12-slim AS builder-cli
+COPY --from=builder /usr/local/bin/gova /usr/local/bin/gova
+CMD ["sleep", "infinity"]

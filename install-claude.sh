@@ -66,8 +66,8 @@ import json, os, sys
 #              with it. It used to be named there and registered nowhere, so an
 #              agent that followed the instruction reached for a tool that did
 #              not exist.
-# These go in ~/.claude.json (user scope). The project's own .mcp.json is
-# generated further down for gova-builder and is rewritten per project.
+# These go in ~/.claude.json (user scope). The GOVA builder is not among them
+# — it is the ./gova CLI, not an MCP server.
 # install-opencode.sh registers the same two servers in .opencode/opencode.json,
 # which is project-scoped -- opencode has no user-scope equivalent of this file.
 REMOTE_SERVERS = {
@@ -108,34 +108,8 @@ PYEOF
 ok "Remote MCP servers registered"
 
 gova_build_containers "$SCRIPT_DIR"
-gova_verify_mcp_binary "$CONTAINER_NAME"
+gova_verify_builder "$CONTAINER_NAME"
 
-step "Generating .mcp.json"
-
-python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" <<'PYEOF'
-import json, sys, os
-
-container   = sys.argv[1]
-project_dir = sys.argv[2]
-mcp_path    = os.path.join(project_dir, ".mcp.json")
-
-config = {
-    "mcpServers": {
-        "gova-builder": {
-            "command": "docker",
-            "args": ["exec", "-i", container, "/usr/local/bin/mcp-server"]
-        }
-    }
-}
-
-with open(mcp_path, "w") as f:
-    json.dump(config, f, indent=2)
-    f.write("\n")
-
-print(f"  + .mcp.json → gova-builder via {container}")
-PYEOF
-
-ok ".mcp.json generated"
 
 echo ""
 echo "======================================"
@@ -144,7 +118,7 @@ echo ""
 echo "  1. Fill in SEED.md with your app idea"
 echo "  2. Add API keys to .env if needed"
 echo "  3. Open Claude Code:  claude"
-echo "  4. Verify MCP tools:  /mcp"
+echo "  4. Verify the builder: ./gova help"
 echo "  5. Start building:    /build"
 echo ""
 echo "  Using opencode too? Run ./install-opencode.sh — it shares this .env,"

@@ -1,10 +1,8 @@
 package models
 
 import (
-	"testing"
-	{{- if .CRUD}}
 	"database/sql"
-	{{- end}}
+	"testing"
 	{{- if hasTimestamp .Fields}}
 	"time"
 	{{- end}}
@@ -21,9 +19,9 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		{{- end}}
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
-	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+	m := New{{.PascalName}}Model(testDB, cache.New())
 
-{{testDecls .Fields "\t"}}	id, err := m.Create({{testArgs .Fields}})
+{{testDecls .Fields "\t" ""}}	id, err := m.Create({{testArgs .Fields ""}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -52,7 +50,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 	if items[0].ID != id {
 		t.Errorf("GetPage: got ID %d, want %d", items[0].ID, id)
 	}
-{{range publicFields .Fields}}{{if .Nullable}}
+{{range .Fields}}{{if .Nullable}}
 	if items[0].{{toPascal .Name}} == nil {
 		t.Errorf("GetPage: {{.Name}} was not recovered (nil)")
 	} else if {{testFieldMismatch . (printf "*items[0].%s" (toPascal .Name)) (printf "%sTestVal" .Name)}} {
@@ -81,6 +79,10 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 	if _, err := m.Find(id); err == nil {
 		t.Error("Find after Delete: expected error, got nil")
 	}
+	// Deleting a row that is not there is a miss, not a silent success.
+	if err := m.Delete(id); err != sql.ErrNoRows {
+		t.Errorf("Delete(missing): got %v, want sql.ErrNoRows", err)
+	}
 }
 
 {{if .CRUD}}
@@ -92,18 +94,18 @@ func Test{{.PascalName}}Model_Update(t *testing.T) {
 		{{- end}}
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
-	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+	m := New{{.PascalName}}Model(testDB, cache.New())
 
-{{testDecls .Fields "\t"}}	id, err := m.Create({{testArgs .Fields}})
+{{testDecls .Fields "\t" ""}}	id, err := m.Create({{testArgs .Fields ""}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// Update the existing row — should succeed.
-	if err := m.Update(id, {{testArgs .Fields}}); err != nil {
+	if err := m.Update(id, {{testArgs .Fields ""}}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	// Update a missing row — should report sql.ErrNoRows.
-	if err := m.Update(999999, {{testArgs .Fields}}); err != sql.ErrNoRows {
+	if err := m.Update(999999, {{testArgs .Fields ""}}); err != sql.ErrNoRows {
 		t.Errorf("Update(missing): got %v, want sql.ErrNoRows", err)
 	}
 }
@@ -116,7 +118,7 @@ func Test{{.PascalName}}Model_GetPageRejectsBadSort(t *testing.T) {
 		{{- end}}
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
-	m := New{{.PascalName}}Model(testDB.Read, testDB.Write, cache.New())
+	m := New{{.PascalName}}Model(testDB, cache.New())
 	if _, _, err := m.GetPage(50, 0, QueryOpts{Sort: "bogus_column"}); err != ErrInvalidQuery {
 		t.Errorf("GetPage bad sort: got %v, want ErrInvalidQuery", err)
 	}

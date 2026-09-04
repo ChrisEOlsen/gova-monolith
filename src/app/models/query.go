@@ -2,6 +2,7 @@ package models
 
 import (
 	"errors"
+	"slices"
 	"strings"
 )
 
@@ -34,7 +35,7 @@ func orderByClause(sort string, allowed []string) (string, error) {
 		col = sort[1:]
 		dir = "DESC"
 	}
-	if !contains(allowed, col) {
+	if !slices.Contains(allowed, col) {
 		return "", ErrInvalidQuery
 	}
 	return "ORDER BY " + col + " " + dir, nil
@@ -44,17 +45,8 @@ func orderByClause(sort string, allowed []string) (string, error) {
 // column name (to be interpolated), or ErrInvalidQuery. The filter value is
 // bound as a ? parameter by the caller — never interpolated.
 func filterField(field string, allowed []string) (string, error) {
-	if !contains(allowed, field) {
+	if !slices.Contains(allowed, field) {
 		return "", ErrInvalidQuery
 	}
 	return field, nil
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

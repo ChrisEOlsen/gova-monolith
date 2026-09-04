@@ -7,16 +7,56 @@ import (
 	"strings"
 )
 
-// reservedModelNames would collide with hand-written identifiers in the
-// generated models package. models.Time is the shared timestamp type; a model
-// named "time" would produce a duplicate declaration that fails to compile.
+// reservedModelNames would collide with hand-written code in the models
+// package. "time" is the shared timestamp type; "user" and "mobile_token" are
+// auth's own models, which ship with the template.
 var reservedModelNames = map[string]bool{
-	"time": true,
+	"time":         true,
+	"user":         true,
+	"mobile_token": true,
 }
 
 func checkReservedName(name string) error {
 	if reservedModelNames[strings.ToLower(name)] {
-		return fmt.Errorf("model name %q is reserved — it would collide with a type in the models package", name)
+		return fmt.Errorf("model name %q is reserved by the template — it already exists in the models package", name)
+	}
+	return nil
+}
+
+// credentialColumn reports a column that stores a secret. The scaffolding tools
+// build generic CRUD, where a PUT that merely omits a field writes its zero
+// value — so a credential column reachable from one is a credential anybody can
+// blank. Authentication ships as hand-written code in src/app; nothing
+// generated has any business holding a secret.
+func credentialColumn(name string) bool {
+	n := strings.ToLower(name)
+	// A stored digest, however it is spelled: password_hash, token_hash,
+	// PasswordHash.
+	if strings.HasSuffix(n, "hash") {
+		return true
+	}
+	if strings.Contains(n, "password") || strings.Contains(n, "passwd") || strings.Contains(n, "passphrase") {
+		return true
+	}
+	// Matched per underscore-separated segment, not as a substring, so
+	// `secretary_id` and `salted_caramel` stay ordinary columns while
+	// `client_secret` does not.
+	for _, seg := range strings.Split(n, "_") {
+		switch seg {
+		case "secret", "otp", "salt", "apikey":
+			return true
+		}
+	}
+	return false
+}
+
+func checkNoCredentialColumns(fields []Field) error {
+	for _, f := range fields {
+		if credentialColumn(f.Name) {
+			return fmt.Errorf("field %q looks like a credential — the scaffolding tools generate generic CRUD, "+
+				"where a request that omits the field would overwrite it. Authentication already ships in "+
+				"src/app/handlers/auth.go; keep secrets there", f.Name)
+		}
 	}
 	return nil
 }
@@ -107,51 +147,11 @@ func acceptedSQLTypes(fieldType string) []string {
 	}
 }
 
-// knownFieldTypes is every type a field declaration may name.
-//
-// Enforced because parseFields has no error return and an unrecognised type
-// falls through goTypeFor's default to `string`. So `updated_at:timestmap`
-// silently generated a string column, which is precisely the bug the timestamp
-// type was added to fix, arriving by typo instead. Semantic formats
-// (name:email and friends) are resolved to `string` before this runs and are
-// deliberately not listed here.
-var knownFieldTypes = map[string]bool{
-	"string":    true,
-	"int":       true,
-	"boolean":   true,
-	"float":     true,
-	"password":  true,
-	"timestamp": true,
-}
-
-func validateFieldTypes(fields []Field) error {
-	for _, f := range fields {
-		if !knownFieldTypes[f.Type] {
-			return fmt.Errorf("field %q has unknown type %q — use one of: boolean, float, int, password, string, timestamp",
-				f.Name, f.Type)
-		}
-	}
-	return nil
-}
-
 // requireImplicitColumns checks the two columns every generated model uses
-// without the caller ever declaring them.
-//
-// model.go.tmpl hard-codes both: `ID int64` and `CreatedAt Time` in the struct,
-// "id" and "created_at" in AllowedColumns, and `SELECT id, ..., created_at` in
-// GetPage. Nothing asked for them, so nothing checked for them — applySchemaAt
-// validated only the fields the caller named.
-//
-// A table without created_at therefore scaffolded CLEANLY and failed at
-// runtime with "no such column: created_at" on the first list request. The
-// generated test could not catch it either, because model_test.go.tmpl builds
-// its own table from a literal that includes created_at: the test passed
-// against a schema the app does not use. A green suite plus a broken endpoint
-// is the worst possible pairing, so this moves the failure to the tool call
-// where the diff is still in front of you.
-//
-// orderByClause's default is "ORDER BY created_at DESC", so the column is load
-// bearing for every list endpoint, not only for the JSON field.
+// without the caller declaring them: model.go.tmpl hard-codes `id` and
+// `created_at` in the struct, the sort whitelist and the SELECT, and lists
+// default to ORDER BY created_at DESC. Checked here so a missing column fails
+// the command rather than the first request.
 func requireImplicitColumns(table string, cols []column) error {
 	byName := make(map[string]column, len(cols))
 	for _, c := range cols {
@@ -203,6 +203,9 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 	if err := validateFieldTypes(fields); err != nil {
 		return nil, err
 	}
+	if err := checkNoCredentialColumns(fields); err != nil {
+		return nil, err
+	}
 
 	byName := make(map[string]column, len(cols))
 	names := make([]string, 0, len(cols))
@@ -223,10 +226,6 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 			return nil, fmt.Errorf("field %q declared as %s (expects %s) but column %q.%s is %s",
 				f.Name, f.Type, strings.Join(accepted, " or "), table, f.Name, c.SQLType)
 		}
-		if f.Type == "password" && !c.NotNull {
-			return nil, fmt.Errorf("field %q is a password field but column %q.%s is nullable — declare it NOT NULL",
-				f.Name, table, f.Name)
-		}
 		f.Nullable = !c.NotNull
 		out = append(out, f)
 	}
@@ -235,5 +234,5 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 
 // applySchema is the production entry point, against the live app database.
 func applySchema(table string, fields []Field) ([]Field, error) {
-	return applySchemaAt(sqliteDSN, table, fields)
+	return applySchemaAt(dataDSN, table, fields)
 }

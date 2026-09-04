@@ -21,7 +21,10 @@ type generatedPage struct {
 	auth  bool
 }
 
-var generatedPages = []generatedPage{}
+var generatedPages = []generatedPage{
+	{path: "/login", file: "login", title: "Sign In", auth: false},
+	{path: "/register", file: "register", title: "Create Account", auth: false},
+}
 
 // pagesRouter mounts the real RegisterPages on a real chi router.
 //
@@ -46,8 +49,7 @@ func getPage(t *testing.T, r chi.Router, target string) *httptest.ResponseRecord
 }
 
 // TestGeneratedPages_ServeTheirShell is the end-to-end proof that a scaffolded
-// page is reachable at its registered URL. Scaffolds used to emit .html/.js
-// shells and register nothing, so every page they produced was dead on arrival.
+// page is reachable at its registered URL.
 func TestGeneratedPages_ServeTheirShell(t *testing.T) {
 	if len(generatedPages) == 0 {
 		t.Skip("no pages registered yet — nothing to serve")
@@ -82,19 +84,11 @@ func TestGeneratedPages_ServeTheirShell(t *testing.T) {
 	}
 }
 
-// TestGeneratedPages_GuardedPagesRedirectWhenSignedOut is what makes a page's
-// `auth: true` a property rather than a note in a JSON file.
+// TestGeneratedPages_GuardedPagesRedirectWhenSignedOut makes a page's
+// `auth: true` a property rather than a note in a JSON file: generated per
+// page, so a project cannot declare one guarded and ship it open.
 //
-// The flag used to be written into api.json and rendered nowhere: it read like
-// a security control and enforced nothing. It is now a redirect wrap
-// (middleware.RequirePageAuth), and this test is generated per-page so a
-// project cannot declare a page guarded and ship it open.
-//
-// What it does NOT claim: this is not what protects the page's data. The shell
-// is inert HTML and every datum on it comes from an /api/v1/ endpoint, which is
-// where auth:true is a boundary. Here it removes the flash — without it a
-// signed-out visitor renders the whole page and is bounced only once the JS
-// module loads and calls requireAuth().
+// The guard is a courtesy, not a boundary — see docs/DECISIONS.md § 7.
 func TestGeneratedPages_GuardedPagesRedirectWhenSignedOut(t *testing.T) {
 	guarded := 0
 	for _, p := range generatedPages {

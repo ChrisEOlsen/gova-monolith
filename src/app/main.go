@@ -12,6 +12,7 @@ import (
 	"gova/app/db"
 	"gova/app/handlers"
 	"gova/app/middleware"
+	"gova/app/models"
 )
 
 func main() {
@@ -32,43 +33,29 @@ func main() {
 	defer database.Close()
 
 	appCache := cache.New()
-	_ = appCache
 
 	r := chi.NewRouter()
 	r.Use(chiMiddleware.Logger)
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(middleware.Security)
 	r.Use(middleware.CSRF)
-	r.Use(middleware.Auth)
-	// Session revocation is wired by scaffold output: the generated auth
-	// file's init() installs middleware.EpochLookup against the users table
-	// (see templates/auth_handler.go.tmpl). An app scaffolded without auth
-	// has neither sessions to revoke nor a lookup — EpochLookup stays nil
-	// and the epoch check passes everything, the pre-epoch behavior.
+	r.Use(middleware.Auth(models.NewUserModel(database)))
 
-	// Fallbacks for a path that matched no route, and for a method that is not
-	// registered on a path that did. chi's defaults answer in plain text, which
-	// breaks the envelope contract for /api/ callers; these answer in the
-	// envelope there and leave human-facing URLs alone.
+	// chi's own fallbacks answer in plain text, which breaks the envelope for
+	// /api/ callers. Human-facing URLs keep the ordinary page response.
 	r.NotFound(handlers.NotFoundHandler())
 	r.MethodNotAllowed(handlers.MethodNotAllowedHandler())
 
-	// Static files
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 
-	// Pages. Source of truth: api.json's "pages" -> handlers/pages_gen.go.
-	// Never hand-wire a page route here; create_page and the scaffold tools
-	// regenerate RegisterPages. "/" is the framework's own home shell and is
-	// not in the manifest.
+	// Home is the framework's own shell and is not in the manifest. Every other
+	// page comes from api.json via pages_gen.go — never hand-wire one here.
 	r.Get("/", handlers.HomeGET())
 	handlers.RegisterPages(r)
 
-	// API
 	r.Get("/api/v1/_version", handlers.VersionGET())
-	r.Get("/api/v1/_manifest", handlers.ManifestGET())
 
-	// Generated API routes. Source of truth: api.json -> handlers/routes_gen.go.
-	// Never hand-edit routes here; scaffold tools regenerate RegisterGenerated.
+	// API routes from api.json via routes_gen.go — never hand-wire one here.
 	handlers.RegisterGenerated(r, database, appCache)
 
 	port := os.Getenv("APP_PORT")

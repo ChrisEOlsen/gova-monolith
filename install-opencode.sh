@@ -18,7 +18,7 @@ ok "opencode $(opencode --version 2>/dev/null | tail -1) present"
 
 gova_setup_env "$SCRIPT_DIR"
 gova_build_containers "$SCRIPT_DIR"
-gova_verify_mcp_binary "$CONTAINER_NAME"
+gova_verify_builder "$CONTAINER_NAME"
 
 # ---------------------------------------------------------------------------
 # Model profile
@@ -96,28 +96,17 @@ fi
 
 step "Generating opencode.json"
 
-python3 - "$CONTAINER_NAME" "$SCRIPT_DIR" "${MODEL_LEAD:-}" "${MODEL_WORK:-}" "${MODEL_REVIEW:-}" "${MODEL_SMALL:-}" <<'PYEOF'
+python3 - "$SCRIPT_DIR" "${MODEL_LEAD:-}" "${MODEL_WORK:-}" "${MODEL_REVIEW:-}" "${MODEL_SMALL:-}" <<'PYEOF'
 import json, sys, os
 
-container, project_dir, lead, work, review, small = sys.argv[1:7]
+project_dir, lead, work, review, small = sys.argv[1:6]
 config_path = os.path.join(project_dir, "opencode.json")
 
-# This file is machine-specific and gitignored -- it is opencode's counterpart
-# to .mcp.json. The committed, machine-independent half lives in
-# .opencode/opencode.json; opencode deep-merges the two, project root first.
-config = {
-    "$schema": "https://opencode.ai/config.json",
-    "mcp": {
-        "gova-builder": {
-            "type": "local",
-            "command": ["docker", "exec", "-i", container, "/usr/local/bin/mcp-server"],
-            "enabled": True,
-            # A scaffold call renders templates and writes several files; the
-            # 5s default is not enough for a cold container.
-            "timeout": 120000,
-        }
-    },
-}
+# This file is machine-specific and gitignored: it holds only the model choices,
+# which differ per machine. The committed half — the remote MCP servers — lives
+# in .opencode/opencode.json; opencode deep-merges the two, project root first.
+# The builder itself is the ./gova CLI, not an MCP server.
+config = {"$schema": "https://opencode.ai/config.json"}
 
 if lead:
     config["model"] = lead
@@ -134,7 +123,6 @@ with open(config_path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
 
-print(f"  + opencode.json → gova-builder via {container}")
 if lead:
     print(f"  + plan {lead} | implement {work} | review {review} | small {small}")
 PYEOF
@@ -191,7 +179,7 @@ echo ""
 echo "  1. Fill in SEED.md with your app idea"
 echo "  2. Add API keys to .env if needed"
 echo "  3. Open opencode:     opencode"
-echo "  4. Verify MCP tools:  opencode mcp list  (gova-builder, context7, stripe)"
+echo "  4. Verify the builder: ./gova help"
 echo "  5. Start building:    /build"
 echo ""
 echo "  Commands: /build, /launch, /security-analyze"

@@ -1,4 +1,4 @@
-import { get, post, del } from '/static/js/lib/api.js';
+import { get } from '/static/js/lib/api.js';
 {{- if .AuthRequired}}
 import { requireAuth } from '/static/js/lib/auth.js';
 {{- end}}
@@ -20,7 +20,5 @@ function render() {
   app.replaceChildren();
   app.appendChild(p);
 }
-
-// @inject-forms
 
 init();

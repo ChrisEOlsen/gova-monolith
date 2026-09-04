@@ -13,12 +13,11 @@ services:
       - ./logs:/logs
     env_file: .env
 
-  mcp:
+  builder:
     build:
       context: .
-      target: mcp
+      target: builder-cli
     volumes:
       - ./src:/src
       - ./data:/data
     restart: unless-stopped
-    stdin_open: true

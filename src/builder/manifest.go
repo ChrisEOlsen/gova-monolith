@@ -12,49 +12,30 @@ import (
 	"time"
 )
 
-const (
-	manifestFilePath = "/src/app/api.json"
-	handlersDirPath  = "/src/app/handlers"
-)
-
 type Manifest struct {
-	APIVersion  string     `json:"api_version"`
-	Hash        string     `json:"hash"`
-	GeneratedAt string     `json:"generated_at"`
-	Template    Template   `json:"template"`
-	Models      []Model    `json:"models"`
-	Endpoints   []Endpoint `json:"endpoints"`
-	Pages       []Page     `json:"pages"`
+	APIVersion     string     `json:"api_version"`
+	Hash           string     `json:"hash"`
+	GeneratedAt    string     `json:"generated_at"`
+	BuilderVersion string     `json:"builder_version,omitempty"`
+	Models         []Model    `json:"models"`
+	Endpoints      []Endpoint `json:"endpoints"`
+	Pages          []Page     `json:"pages"`
 }
 
-// Template records which build of the generator wrote this manifest.
+// Page is a human-facing HTML route serving a static shell out of static/pages.
+// Kept in its own table because a page is not part of the API surface a native
+// client consumes — see docs/DECISIONS.md § 7.
 //
-// It is PROVENANCE, not surface, so it is deliberately outside manifestHash:
-// bumping the template must not look like an API change to a client watching
-// that hash. See version.go for why an app needs to be able to answer this at
-// all.
-type Template struct {
-	Version     string `json:"version"`
-	Fingerprint string `json:"fingerprint"`
-}
-
-// Page is a human-facing HTML route: a URL a person types or clicks, serving a
-// static shell out of static/pages. Pages are kept in their own table rather
-// than mixed into Endpoints because they are not part of the API surface — they
-// have no method beyond GET, no request or response body, and no deps, and a
-// native client reading this manifest wants nothing to do with them.
-//
-// File is the shell's base name under static/pages (no extension) and is the
-// only thing that reaches the filesystem — never a value from a request.
+// File is the shell's base name (no extension) and is the only thing that
+// reaches the filesystem — never a value from a request.
 type Page struct {
 	Path  string `json:"path"`
 	File  string `json:"file"`
 	Title string `json:"title,omitempty"`
-	// Auth records that this page's JS module calls requireAuth() on load. It
-	// is declarative metadata only: the page shell holds no data, so it is not
-	// wrapped server-side. Answering a browser navigation with a JSON 401 body
-	// would be worse than letting the module redirect, and the data behind the
-	// page is protected on its own /api/v1/ endpoints.
+	// Auth wraps the page route in middleware.RequirePageAuth — a 303 to
+	// /login, not a JSON 401. A courtesy rather than a boundary: the shell is
+	// inert, so the endpoints behind it are what must carry auth. See
+	// docs/DECISIONS.md § 7.
 	Auth bool `json:"auth"`
 }
 
@@ -188,8 +169,7 @@ func (m *Manifest) canonicalize() {
 // manifestHash is sha256 over the models, endpoints and pages (sorted by
 // canonicalize before this is called), excluding generated_at so an
 // otherwise-identical manifest always hashes the same. Pages are in the payload
-// so that adding or moving a page shows up as a surface change in
-// GET /api/v1/_version's manifest_hash.
+// so that adding or moving a page shows up as a surface change.
 func manifestHash(m Manifest) string {
 	payload := struct {
 		Models    []Model    `json:"models"`
@@ -206,27 +186,22 @@ func writeManifestAt(path string, m *Manifest, now time.Time) error {
 		m.APIVersion = "1.0.0"
 	}
 	m.canonicalize()
-	// Stamped on every write, so the record follows the surface it describes
-	// rather than being set once at scaffold time and drifting.
-	m.Template = Template{Version: templateVersion(), Fingerprint: templateFingerprint()}
+	m.BuilderVersion = builderVersion
 	m.GeneratedAt = now.UTC().Format(time.RFC3339)
-	// Atomic replace: a reader (inspect_app, the manifest hash endpoint, a
-	// human) either sees the previous complete file or this one — never a
-	// truncation from a crash mid-write, which used to surface as a hard
-	// "api.json is corrupt" error.
+	// Atomic replace: a reader — inspect_app, gova-ios's export script, a human
+	// — sees either the previous complete file or this one, never a truncation
+	// from a crash mid-write.
 	return atomicWriteJSON(path, m)
 }
 
 // callExpr builds the handler constructor call from the endpoint's deps, in
-// argument order. read->database.Read, write->database.Write, cache->appCache.
+// argument order: db->database, cache->appCache.
 func callExpr(e Endpoint) string {
 	args := make([]string, 0, len(e.Deps))
 	for _, d := range e.Deps {
 		switch d {
-		case "read":
-			args = append(args, "database.Read")
-		case "write":
-			args = append(args, "database.Write")
+		case "db":
+			args = append(args, "database")
 		case "cache":
 			args = append(args, "appCache")
 		}
@@ -259,7 +234,7 @@ func renderRoutes(m Manifest) (string, error) {
 		UsesAuth bool
 		Lines    []string
 	}{usesAuth, lines}
-	out, err := renderNamedToString("routes_gen.go.tmpl", data)
+	out, err := renderToString("routes_gen.go.tmpl", data)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +246,7 @@ func regenerateRoutesAt(handlersDir string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	return writeGoFile(filepath.Join(handlersDir, "routes_gen.go"), out)
+	return writeFile(filepath.Join(handlersDir, "routes_gen.go"), out)
 }
 
 // pagesTemplateData is what both page templates render from: the mount lines
@@ -292,7 +267,7 @@ func pagesData(m Manifest) pagesTemplateData {
 		// auth:true wraps the page in a REDIRECT guard, not the JSON
 		// RequireAuth: this is a human-facing URL and a browser must not be
 		// handed an error envelope. See middleware.RequirePageAuth for what the
-		// guard is and is not worth. The flag used to render nothing at all.
+		// guard is and is not worth (docs/DECISIONS.md § 7).
 		if p.Auth {
 			lines = append(lines, fmt.Sprintf(
 				`r.With(middleware.RequirePageAuth).Get(%q, pageFile(%q))`, p.Path, p.File))
@@ -315,7 +290,7 @@ func pagesData(m Manifest) pagesTemplateData {
 // request — to the pageFile helper, which is where the second guard
 // (filepath.Base) lives.
 func renderPages(m Manifest) (string, error) {
-	out, err := renderNamedToString("pages_gen.go.tmpl", pagesData(m))
+	out, err := renderToString("pages_gen.go.tmpl", pagesData(m))
 	if err != nil {
 		return "", err
 	}
@@ -328,7 +303,7 @@ func renderPages(m Manifest) (string, error) {
 // hand-written test cannot know which pages a project scaffolded, and a page
 // that is registered but unreachable is exactly the defect this closes.
 func renderPagesTest(m Manifest) (string, error) {
-	out, err := renderNamedToString("pages_gen_test.go.tmpl", pagesData(m))
+	out, err := renderToString("pages_gen_test.go.tmpl", pagesData(m))
 	if err != nil {
 		return "", err
 	}
@@ -340,49 +315,22 @@ func regeneratePagesAt(handlersDir string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	if err := writeGoFile(filepath.Join(handlersDir, "pages_gen.go"), out); err != nil {
+	if err := writeFile(filepath.Join(handlersDir, "pages_gen.go"), out); err != nil {
 		return err
 	}
 	testOut, err := renderPagesTest(m)
 	if err != nil {
 		return err
 	}
-	return writeGoFile(filepath.Join(handlersDir, "pages_gen_test.go"), testOut)
+	return writeFile(filepath.Join(handlersDir, "pages_gen_test.go"), testOut)
 }
 
-// fieldsToModel converts Build 1 Field records (carrying schema-derived
-// Nullable) into a manifest Model, adding the implicit id (first) and
-// created_at (last) columns every generated table has.
-//
-// CREDENTIAL COLUMNS ARE OMITTED, not downgraded. api.json is the source of
-// truth for the SERVED SURFACE — what actually crosses the wire — and a
-// credential column never does: model.go.tmpl tags it `json:"-"`, GetPage does
-// not select it, and it is absent from the sort/filter whitelist. Listing it
-// here as a non-nullable `string` (which is what this used to do, flattening
-// the type) told a client generator to emit a REQUIRED field that appears in no
-// response, which a strict decoder rejects outright — the same failure class
-// the timestamp rule exists to prevent, and one inspect_app cannot see because
-// it never compares struct tags to the manifest.
-//
-// Nothing is lost that was not already lost: the type was flattened to `string`
-// anyway, so the manifest never described the column honestly. Recording it as
-// explicitly non-serialized was the alternative and is worse by default — every
-// existing consumer that does not know the new flag keeps emitting the required
-// field, so the fix would only reach clients that opted into it.
-//
-// The manifest is not the schema. `PRAGMA table_info` is, and applySchema reads
-// it on every scaffold; a column being absent here does not make it invisible
-// to the generator.
+// fieldsToModel converts Field records into a manifest Model, adding the
+// implicit id (first) and created_at (last) columns every generated table has.
 func fieldsToModel(name, table string, fields []Field) Model {
 	out := make([]ModelField, 0, len(fields)+2)
 	out = append(out, ModelField{Name: "id", Type: "int", Nullable: false})
 	for _, f := range fields {
-		// isCredentialColumn, not isSecret: model.go.tmpl tags a
-		// credential-NAMED column `json:"-"` too, and the manifest must
-		// describe the same list the struct serializes.
-		if isCredentialColumn(f) {
-			continue
-		}
 		out = append(out, ModelField{
 			Name: f.Name, Type: f.Type, Nullable: f.Nullable,
 			Format: f.Format, References: f.Ref,
@@ -395,7 +343,8 @@ func fieldsToModel(name, table string, fields []Field) Model {
 // parseBodySchemaArg parses a create_handler schema argument. Empty input means
 // "no schema declared" (nil, nil). A non-empty value must be valid JSON with a
 // recognized shape.
-func parseBodySchemaArg(raw string) (*BodySchema, error) {
+func parseBodySchemaArg(arg any) (*BodySchema, error) {
+	raw, _ := arg.(string)
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
@@ -445,7 +394,7 @@ func validateRefsAt(apiPath string, fields []Field) error {
 }
 
 // validateRefs is the production entry point (against the live manifest path).
-func validateRefs(fields []Field) error { return validateRefsAt(manifestFilePath, fields) }
+func validateRefs(fields []Field) error { return validateRefsAt(manifestPath(), fields) }
 
 // writableFields is a model's fields minus the auto columns id and created_at —
 // the body a client sends on create/update.
@@ -493,12 +442,9 @@ func resourceResponse(m Model, kind string) *BodySchema {
 // registrations — the classic lost update that no same-key conflict check can
 // see, because each writer's snapshot is stale by the time it writes.
 func updateManifestAt(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint, pages []Page) error {
-	var err error
-	withWorkspaceLock(func() error {
-		err = updateManifestLocked(apiPath, handlersDir, now, models, endpoints, pages)
-		return nil
+	return withWorkspaceLock(func() error {
+		return updateManifestLocked(apiPath, handlersDir, now, models, endpoints, pages)
 	})
-	return err
 }
 
 func updateManifestLocked(apiPath, handlersDir string, now time.Time, models []Model, endpoints []Endpoint, pages []Page) error {

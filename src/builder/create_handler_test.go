@@ -9,6 +9,7 @@ import (
 
 func TestCustomEndpointSchemaRoundtrip(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	api := filepath.Join(dir, "api.json")
 	handlers := filepath.Join(dir, "handlers")
 	os.MkdirAll(handlers, 0755)
@@ -19,7 +20,7 @@ func TestCustomEndpointSchemaRoundtrip(t *testing.T) {
 	}
 	respS, _ := parseBodySchemaArg(`{"shape":"object","fields":[{"name":"ok","type":"boolean"}]}`)
 	ep := Endpoint{Method: "POST", Path: "/api/v1/todos/{id}/archive", Handler: "TodoArchivePOST",
-		Deps: []string{"read", "write", "cache"}, Kind: "custom", Summary: "Archive a todo",
+		Deps: []string{"db", "cache"}, Kind: "custom", Summary: "Archive a todo",
 		Request: reqS, Response: respS}
 
 	if err := updateManifestAt(api, handlers, time.Unix(0, 0).UTC(), nil, []Endpoint{ep}, nil); err != nil {

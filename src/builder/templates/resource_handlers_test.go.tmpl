@@ -1,12 +1,3 @@
-{{/* CREDENTIAL GUARD. This template builds a request struct tagged by column
-     name and passes every decoded field to Create/Update, so a PUT that OMITS a
-     password field would blank the stored credential with bcrypt(""). These
-     endpoints are PUBLIC by default. refuseCredentials aborts the render rather
-     than emitting that; renderToFile writes nothing on a render error, so no
-     partial file lands. handleScaffoldResource refuses the same input at the
-     tool boundary — this is the second, independent line. See
-     funcMap["refuseCredentials"]. */}}
-{{- refuseCredentials "resource_handlers_test.go.tmpl (scaffold_resource)" .Fields -}}
 package handlers
 
 import (
@@ -14,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+{{- if hasTimestamp .Fields}}
+	"time"
+{{- end}}
 
 	"github.com/go-chi/chi/v5"
 	"gova/app/cache"
@@ -34,11 +28,11 @@ func {{.Name}}ResourceSchema() string {
 // {{.Name}}Router mounts the five resource routes so path params resolve.
 func {{.Name}}Router(testDB *db.DB, appCache *cache.Cache) chi.Router {
 	r := chi.NewRouter()
-	r.Get("/api/v1/{{.PluralName}}", {{.PascalName}}ListGET(testDB.Read, testDB.Write, appCache))
-	r.Get("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DetailGET(testDB.Read, testDB.Write, appCache))
-	r.Post("/api/v1/{{.PluralName}}", {{.PascalName}}CreatePOST(testDB.Read, testDB.Write, appCache))
-	r.Put("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}UpdatePUT(testDB.Read, testDB.Write, appCache))
-	r.Delete("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DeleteDELETE(testDB.Read, testDB.Write, appCache))
+	r.Get("/api/v1/{{.PluralName}}", {{.PascalName}}ListGET(testDB, appCache))
+	r.Get("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DetailGET(testDB, appCache))
+	r.Post("/api/v1/{{.PluralName}}", {{.PascalName}}CreatePOST(testDB, appCache))
+	r.Put("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}UpdatePUT(testDB, appCache))
+	r.Delete("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DeleteDELETE(testDB, appCache))
 	return r
 }
 
@@ -46,8 +40,8 @@ func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 	testDB := db.OpenTest(t, {{.Name}}ResourceSchema())
 	appCache := cache.New()
 	router := {{.Name}}Router(testDB, appCache)
-	model := models.New{{.PascalName}}Model(testDB.Read, testDB.Write, appCache)
-{{testDecls .Fields "\t"}}	id, err := model.Create({{testArgs .Fields}})
+	model := models.New{{.PascalName}}Model(testDB, appCache)
+{{testDecls .Fields "\t" "models."}}	id, err := model.Create({{testArgs .Fields "models."}})
 	if err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}

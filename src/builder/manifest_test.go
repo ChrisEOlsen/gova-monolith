@@ -19,7 +19,7 @@ func sampleModel() Model {
 
 func sampleEndpoint() Endpoint {
 	return Endpoint{Method: "GET", Path: "/api/v1/projects", Handler: "ProjectListGET",
-		Deps: []string{"read", "write", "cache"}, Auth: false, Model: "project", Kind: "list"}
+		Deps: []string{"db", "cache"}, Auth: false, Model: "project", Kind: "list"}
 }
 
 func TestReadManifest_MissingFileIsEmpty(t *testing.T) {
@@ -158,6 +158,7 @@ func TestListPage_PluralNamespaceCannotCollideWithAuthPages(t *testing.T) {
 
 func TestUpdateManifestAt_PageConflictWritesNothing(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	handlersDir := filepath.Join(dir, "handlers")
 	_ = os.MkdirAll(handlersDir, 0755)
 	apiPath := filepath.Join(dir, "api.json")
@@ -191,6 +192,7 @@ func TestUpdateManifestAt_PageConflictWritesNothing(t *testing.T) {
 
 func TestUpdateManifestAt_PagesAreIdempotent(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	handlersDir := filepath.Join(dir, "handlers")
 	_ = os.MkdirAll(handlersDir, 0755)
 	apiPath := filepath.Join(dir, "api.json")
@@ -320,6 +322,7 @@ func TestFieldsToModel_CarriesFormatAndRef(t *testing.T) {
 
 func TestValidateRefsAt(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	p := filepath.Join(dir, "api.json")
 	os.WriteFile(p, []byte(`{"api_version":"1.0.0","models":[{"name":"log_category","table":"log_categories","fields":[]}],"endpoints":[]}`), 0644)
 	if err := validateRefsAt(p, []Field{{Name: "category_id", Type: "int", Ref: "log_category"}}); err != nil {
@@ -335,6 +338,7 @@ func TestValidateRefsAt(t *testing.T) {
 
 func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	handlersDir := filepath.Join(dir, "handlers")
 	if err := os.MkdirAll(handlersDir, 0755); err != nil {
 		t.Fatal(err)
@@ -357,13 +361,14 @@ func TestUpdateManifestAt_WritesAndRegenerates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routes_gen.go not written: %v", err)
 	}
-	if !strings.Contains(string(routes), "ProjectListGET(database.Read, database.Write, appCache)") {
+	if !strings.Contains(string(routes), "ProjectListGET(database, appCache)") {
 		t.Errorf("routes_gen.go missing the route:\n%s", routes)
 	}
 }
 
 func TestUpdateManifestAt_ConflictWritesNothing(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("GOVA_LOCK_PATH", filepath.Join(dir, "lock"))
 	handlersDir := filepath.Join(dir, "handlers")
 	_ = os.MkdirAll(handlersDir, 0755)
 	apiPath := filepath.Join(dir, "api.json")
@@ -436,8 +441,8 @@ func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
 		if e.Model != "project" {
 			t.Errorf("%s: model got %q want project", key, e.Model)
 		}
-		if len(e.Deps) != 3 {
-			t.Errorf("%s: deps got %v want [read write cache]", key, e.Deps)
+		if len(e.Deps) != 2 {
+			t.Errorf("%s: deps got %v want [db cache]", key, e.Deps)
 		}
 	}
 	// The handler symbols must match what resource_handlers.go.tmpl generates.
@@ -496,47 +501,72 @@ func TestResourceEndpoints_Schemas(t *testing.T) {
 	}
 }
 
-func TestAuthEndpoints_SevenWithKinds(t *testing.T) {
-	eps := authEndpoints()
-	if len(eps) != 7 {
-		t.Fatalf("got %d endpoints, want 7", len(eps))
+// The committed api.json carries auth's full surface: the template ships auth
+// rather than scaffolding it, and gova-ios reads these rows straight off disk
+// to decide whether bearer login exists and which screens to generate.
+func TestCommittedManifest_CarriesTheAuthContract(t *testing.T) {
+	m, err := readManifestAt("../app/api.json")
+	if err != nil {
+		t.Fatalf("read committed api.json: %v", err)
 	}
-	type want struct {
+
+	want := map[string]struct {
 		handler string
 		kind    string
 		auth    bool
-		deps    int
+	}{
+		"POST /api/v1/auth/login":          {"LoginPOST", "auth_login", false},
+		"POST /api/v1/auth/logout":         {"LogoutPOST", "auth_logout", false},
+		"POST /api/v1/auth/logout_all":     {"LogoutAllPOST", "auth_logout_all", true},
+		"GET /api/v1/auth/me":              {"MeGET", "auth_me", true},
+		"POST /api/v1/auth/register":       {"RegisterPOST", "register", false},
+		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false},
+		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false},
+		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false},
 	}
-	expect := map[string]want{
-		"POST /api/v1/auth/login":          {"LoginPOST", "auth_login", false, 3},
-		"POST /api/v1/auth/logout":         {"LogoutPOST", "auth_logout", false, 0},
-		"GET /api/v1/auth/me":              {"MeGET", "auth_me", true, 3},
-		"POST /api/v1/auth/logout_all":     {"LogoutAllPOST", "auth_logout_all", true, 3},
-		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false, 3},
-		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false, 2},
-		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false, 3},
+
+	got := map[string]Endpoint{}
+	for _, e := range m.Endpoints {
+		got[e.Method+" "+e.Path] = e
 	}
-	for _, e := range eps {
-		key := e.Method + " " + e.Path
-		w, ok := expect[key]
+	for key, w := range want {
+		e, ok := got[key]
 		if !ok {
-			t.Errorf("unexpected endpoint %s", key)
+			t.Errorf("api.json is missing %s", key)
 			continue
 		}
 		if e.Handler != w.handler {
-			t.Errorf("%s: handler %q want %q", key, e.Handler, w.handler)
+			t.Errorf("%s: handler %q, want %q", key, e.Handler, w.handler)
 		}
 		if e.Kind != w.kind {
-			t.Errorf("%s: kind %q want %q", key, e.Kind, w.kind)
+			t.Errorf("%s: kind %q, want %q", key, e.Kind, w.kind)
 		}
 		if e.Auth != w.auth {
-			t.Errorf("%s: auth %v want %v", key, e.Auth, w.auth)
+			t.Errorf("%s: auth %v, want %v", key, e.Auth, w.auth)
 		}
-		if len(e.Deps) != w.deps {
-			t.Errorf("%s: deps len %d want %d", key, len(e.Deps), w.deps)
+	}
+
+	// The bearer endpoints self-enforce their token; a cookie RequireAuth wrap
+	// would 401 them before the handler ever ran.
+	for _, key := range []string{"POST /api/v1/auth/login_token", "GET /api/v1/auth/me_token"} {
+		if got[key].Auth {
+			t.Errorf("%s must not be wrapped in RequireAuth", key)
 		}
-		if e.Model != "" {
-			t.Errorf("%s: auth endpoints carry no model, got %q", key, e.Model)
+	}
+
+	// The user model must be present and must never carry the hash.
+	var user *Model
+	for i := range m.Models {
+		if m.Models[i].Name == "user" {
+			user = &m.Models[i]
+		}
+	}
+	if user == nil {
+		t.Fatal("api.json does not declare the user model")
+	}
+	for _, f := range user.Fields {
+		if f.Name == "password_hash" {
+			t.Error("the user model exposes password_hash in the manifest")
 		}
 	}
 }

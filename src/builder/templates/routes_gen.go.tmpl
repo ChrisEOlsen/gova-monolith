@@ -10,9 +10,8 @@ import (
 {{- end}}
 )
 
-// RegisterGenerated mounts every scaffolded API route. main.go calls this once
-// and is never hand-edited for routes. Framework endpoints (_version,
-// _manifest) are wired directly in main.go, not here.
+// RegisterGenerated mounts every API route in api.json. main.go calls this once
+// and is never hand-edited for routes.
 func RegisterGenerated(r chi.Router, database *db.DB, appCache *cache.Cache) {
 {{- range .Lines}}
 	{{.}}

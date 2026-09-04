@@ -110,18 +110,41 @@ func TestApplySchema_MissingTableFails(t *testing.T) {
 	}
 }
 
-func TestApplySchema_NullablePasswordFails(t *testing.T) {
-	dsn := testDSN(t, `CREATE TABLE users (
+func TestApplySchema_RefusesCredentialColumns(t *testing.T) {
+	dsn := testDSN(t, `CREATE TABLE accounts (
 		id INTEGER PRIMARY KEY,
 		email TEXT NOT NULL,
-		password TEXT,
+		password_hash TEXT NOT NULL,
+		api_secret TEXT NOT NULL,
+		nickname TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
-	in := []Field{{Name: "password", Type: "password"}}
 
-	_, err := applySchemaAt(dsn, "users", in)
-	if err == nil {
-		t.Fatal("expected error for nullable password column, got nil")
+	// The generated CRUD writes every field it decodes, so a request that
+	// merely omits a credential would blank it. Authentication is hand-written.
+	for _, name := range []string{"password_hash", "api_secret"} {
+		if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: name, Type: "string"}}); err == nil {
+			t.Errorf("field %q should be refused as a credential column", name)
+		}
+	}
+	// An ordinary column is unaffected.
+	if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: "nickname", Type: "string"}}); err != nil {
+		t.Errorf("nickname should be accepted: %v", err)
+	}
+}
+
+func TestCredentialColumn(t *testing.T) {
+	for _, name := range []string{"password", "password_hash", "PasswordHash", "token_hash", "client_secret"} {
+		if !credentialColumn(name) {
+			t.Errorf("%q should read as a credential column", name)
+		}
+	}
+	// Columns that merely look adjacent must pass — a false positive here
+	// blocks a legitimate scaffold.
+	for _, name := range []string{"nickname", "hash_algorithm", "secretary_id", "sort_key", "salted_caramel"} {
+		if credentialColumn(name) {
+			t.Errorf("%q should not read as a credential column", name)
+		}
 	}
 }
 

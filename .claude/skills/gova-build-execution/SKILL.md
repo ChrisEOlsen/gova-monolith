@@ -5,246 +5,171 @@ description: Use to execute a GOVA implementation plan — dispatches a fresh im
 
 # GOVA Build Execution
 
-Execute the plan by dispatching a fresh implementer subagent per task, a task review (spec compliance + code quality) after each, and a broad whole-branch review at the end.
-
-**Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
-
-**Core principle:** Fresh subagent per task + task review (spec + quality) + broad final review = high quality, fast iteration
-
-**Narration:** between tool calls, narrate at most one short line — the ledger and the tool results carry the record.
-
-**Continuous execution:** Do not pause to check in with your human partner between tasks. Execute all tasks from the plan without stopping. The only reasons to stop are: BLOCKED status you cannot resolve, ambiguity that genuinely prevents progress, or all tasks complete. "Should I continue?" prompts and progress summaries waste their time — they asked you to execute the plan, so execute it.
-
-**No worktree:** the branch was already created directly in the main checkout (`git checkout -b build/<app-name>`, no worktree — see CLAUDE.md § No Git Worktrees for Builds). Implementers verify by restarting the app, checking logs/behavior, and running `go test ./...` — scaffold-generated code has tests from its scaffold call; hand-customized logic gets a test per gova-writing-plans Step 3b.
-
-## The Process
-
-1. Read plan, note context and Global Constraints, create a todo per task
-2. Per task:
-   - Dispatch implementer subagent (`implementer-prompt.md`)
-   - If it asks questions, answer them and re-dispatch
-   - Implementer implements, verifies (restart + logs), commits, self-reviews
-   - Write diff file (`scripts/review-package BASE SHA`), dispatch task reviewer (`task-reviewer-prompt.md`)
-   - If reviewer finds Critical/Important issues, dispatch a fix subagent, then re-review
-   - Once spec ✅ and quality approved, mark task complete in todos and the progress ledger
-3. Once all tasks are complete, run a final whole-branch review of the full branch diff against the commit the branch started from — the `code-review` skill in Claude Code, or a `gova-architect` dispatch (or `/review`) in opencode
-4. If the final review finds issues, dispatch one fix subagent with the complete findings list (not one fixer per finding), then hand control back to `/build` to continue to Step 6 (Security Analysis)
-
-## Parallel Waves (max 3 in flight)
-
-Implementation subagents may run concurrently, in **waves of at most 3**.
-Concurrency is safe NOW because the infrastructure serializes the shared
-state — the builder holds a workspace lock across every manifest transaction
-(CLAUDE.md § Parallel Builds), `scripts/restart-app` and `scripts/verify`
-flock restarts, and implementers stage only their own files. That makes
-parallelism correct, not free: SQLite DDL, container restarts, and review
-bandwidth still contend, which is what the cap is for.
-
-**Wave membership — a task may share a wave with another only if ALL hold:**
-- No dependency edge between them: neither consumes what the other produces
-  (checked against the plan's `Interfaces:` blocks)
-- No shared file: their Files lists are disjoint. Two tasks touching the same
-  file (including shared libs like `static/js/lib/api.js`) never share a wave,
-  even with no dependency edge
-
-**Running a wave:** dispatch up to 3, then review each as it completes —
-reviews may overlap the remaining implementers. When the wave's tasks are all
-reviewed clean, run the barrier: `scripts/verify --strict` (full suite, no
-foreign classification — the tree is committed and clean, so it must pass
-untouched). Only then start the next wave.
-
-**Falling back:** repeated foreign-verify failures in a wave mean contention,
-not breakage — drop to 2 (or 1) in flight for the next wave. A single task
-with a dependency edge just runs alone. When in doubt, serialize: a lost
-40% speedup costs less than a debugging session.
-
-**Straight serial is still valid.** Dispatch one implementer at a time and
-review before the next — the waves are an optimization, not a requirement.
-
-## Pre-Flight Plan Review
-
-Before dispatching Task 1, scan the plan once for conflicts:
-
-- tasks that contradict each other or the plan's Global Constraints
-- anything the plan explicitly mandates that the review rubric treats as a defect (verbatim duplication of a logic block, a feature file written without its MCP scaffold call)
-
-Present everything you find to your human partner as one batched question — each finding beside the plan text that mandates it, asking which governs — before execution begins, not one interrupt per discovery mid-plan. If the scan is clean, proceed without comment. The review loop remains the net for conflicts that only emerge from implementation.
-
-## Model Selection
-
-Use the least powerful model that can handle each role to conserve cost and increase speed.
-
-**Mechanical implementation tasks** (one scaffold call, clear spec, 1-2 files to customize): use a fast, cheap model. Most implementation tasks in this stack are mechanical when the plan is well-specified.
-
-**Integration and judgment tasks** (multi-file coordination, non-obvious customization): use a standard model.
-
-**Architecture and design tasks**: use the most capable available model. The final whole-branch review is one of these — dispatch it on the most capable available model, not the session default.
-
-**Review tasks**: choose the model with the same judgment, scaled to the diff's size, complexity, and risk. A small mechanical diff does not need the most capable model.
-
-**Always specify the model explicitly when dispatching a subagent.** An omitted model inherits your session's model — often the most capable and most expensive — which silently defeats this section.
-
-**Under opencode, the model is not a dispatch argument.** Its `task` tool has no
-`model` parameter — a subagent's model comes from its agent definition. The
-tiers above are pinned in config instead: dispatch `subagent_type:
-gova-implementer` for implementation and fix tasks, `gova-reviewer` for task
-review, and `gova-architect` for the final whole-branch review. Their models
-live in `.opencode/agent/*.md` and the generated `opencode.json`; to retier a
-run, edit those rather than the dispatch.
-
-**Turn count beats token price.** Wall-clock and context cost scale with how many turns a subagent takes, and the cheapest models routinely take 2-3× the turns on multi-step work — costing more overall. Use a mid-tier model as the floor for reviewers and for implementers.
-
-Plans specify contracts, not bodies (see `gova-writing-plans` § Specify Contracts, Not Bodies): the task text carries the exact MCP tool call, exact paths, and the exact names and literals crossing task boundaries, but the implementer writes the customization code itself. Budget for that — this is authoring, not transcription, so the cheapest tier is only appropriate for a task that is purely a scaffold call plus verification with no customization step. Mid-tier is the default for any task with a Step 3.
-
-## Handling Implementer Status
-
-Implementer subagents report one of four statuses. Handle each appropriately:
-
-**DONE:** Generate the review package (`scripts/review-package BASE SHA`, from this skill's directory — it prints the unique file path it wrote; BASE is the commit you recorded before dispatching the implementer, SHA is the head commit the implementer REPORTED — never `HEAD`, which in a parallel wave may already include a sibling's just-landed commits), then dispatch the task reviewer with the printed path.
-
-**DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., "this file is getting large"), note them and proceed to review.
-
-**NEEDS_CONTEXT:** The implementer needs information that wasn't provided. Provide the missing context and re-dispatch.
-
-**BLOCKED:** The implementer cannot complete the task. Assess the blocker:
-1. If it's a context problem, provide more context and re-dispatch with the same model
-2. If the task requires more reasoning, re-dispatch with a more capable model
-3. If the task is too large, break it into smaller pieces
-4. If the plan itself is wrong, escalate to the human
-
-**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
-
-## Handling Reviewer ⚠️ Items
-
-The task reviewer may report "⚠️ Cannot verify from diff" items — requirements that live in unchanged code or span tasks. These do not block the rest of the review, but you must resolve each one yourself before marking the task complete: you hold the plan and cross-task context the reviewer lacks. If you confirm an item is a real gap, treat it as a failed spec review — send it back to the implementer and re-review.
-
-## Constructing Reviewer Prompts
-
-Per-task reviews are task-scoped gates. The broad review happens once, at the final whole-branch review. When you fill a reviewer template:
-
-- Do not add open-ended directives like "check all uses" without a concrete, task-specific reason
-- Do not ask a reviewer to re-verify something the implementer already verified on the same code — the implementer's report carries the evidence
-- Do not pre-judge findings for the reviewer — never instruct a reviewer to ignore or not flag a specific issue. If you believe a finding would be a false positive, let the reviewer raise it and adjudicate it in the review loop.
-- The global-constraints block you hand the reviewer is its attention lens. Copy the binding requirements verbatim from the plan's Global Constraints section or the spec.
-- Hand the reviewer its diff as a file: run this skill's `scripts/review-package BASE HEAD` and pass the reviewer the file path it prints. The output never enters your own context.
-- A dispatch prompt describes one task, not the session's history. Do not paste accumulated prior-task summaries into later dispatches — a fresh subagent needs its task, the interfaces it touches, and the global constraints. Nothing else.
-- Dispatch fix subagents for Critical and Important findings. Record Minor findings in the progress ledger as you go, and point the final whole-branch review at that list so it can triage which must be fixed before merge.
-- A finding labeled plan-mandated — or any finding that conflicts with what the plan's text requires — is the human's decision: present the finding and the plan text, ask which governs.
-- Every fix dispatch carries the implementer contract: the fix subagent re-verifies its change (restart + logs) and reports the results.
-- If the final whole-branch review returns findings, dispatch ONE fix subagent with the complete findings list — not one fixer per finding.
-
-## File Handoffs
-
-Everything you paste into a dispatch prompt — and everything a subagent prints back — stays resident in your context for the rest of the session and is re-read on every later turn. Hand artifacts over as files:
-
-- **Task brief:** before dispatching an implementer, run this skill's `scripts/task-brief PLAN_FILE N` — it extracts the task's full text to a uniquely named file and prints the path.
-- **Report file:** name the implementer's report file after the brief (brief `…/task-N-brief.md` → report `…/task-N-report.md`) and put it in the dispatch prompt.
-- **Reviewer inputs:** the task reviewer gets three paths — the same brief file, the report file, and the review package — plus the global constraints that bind the task.
-- Fix dispatches append their fix report to the same report file and return a short summary; re-reviews read the updated file.
-
-## Durable Progress
-
-Conversation memory does not survive compaction. Track progress in a ledger file, not only in todos.
-
-- At skill start, check for a ledger: `cat "$(git rev-parse --show-toplevel)/.gova-build/progress.md"`. Tasks listed there as complete are DONE — do not re-dispatch them; resume at the first task not marked complete.
-- When a task's review comes back clean, append one line to the ledger in the same message as your other bookkeeping: `Task N: complete (commits <base7>..<head7>, review clean)`.
-- The ledger is your recovery map: the commits it names exist in git even when your context no longer remembers creating them. After compaction, trust the ledger and `git log` over your own recollection.
-- `git clean -fdx` will destroy the ledger (it's git-ignored scratch); if that happens, recover from `git log`.
-
-## Prompt Templates
-
-- [implementer-prompt.md](implementer-prompt.md) - Dispatch implementer subagent
-- [task-reviewer-prompt.md](task-reviewer-prompt.md) - Dispatch task reviewer subagent (spec compliance + code quality)
-- Final whole-branch review: the `code-review` skill (Claude Code) or a `gova-architect` dispatch (opencode)
-
-## Advantages
-
-**vs. Manual execution:**
-- Fresh context per task (no confusion)
-- Parallel-safe review loop
-- Subagent can ask questions (before AND during work)
-
-**Efficiency gains:**
-- Controller curates exactly what context is needed; bulk artifacts move as files, not pasted text
-- Subagent gets complete information upfront
-- Questions surfaced before work begins (not after)
-
-**Quality gates:**
-- Self-review catches issues before handoff
-- Task review carries two verdicts: spec compliance and code quality
-- Review loops ensure fixes actually work
-- Spec compliance prevents over/under-building
-- Code quality ensures the scaffolding rule and CLAUDE.md constraints held
-
-## Red Flags
-
-**Never:**
-- Start implementation on main without explicit user consent
-- Skip task review, or accept a report missing either verdict (spec compliance AND task quality are both required)
-- Proceed with unfixed issues
-- Exceed 3 implementers in flight, or put two tasks sharing a file (or a dependency edge) in the same wave (see § Parallel Waves)
-- Let an implementer `git add -A` / stage outside its task's Files list during a parallel wave (see implementer-prompt.md)
-- Build a review package from HEAD during a parallel wave — pin it to the implementer's reported SHA
-- Make a subagent read the whole plan file (hand it its task brief — `scripts/task-brief` — instead)
-- Skip scene-setting context (subagent needs to understand where task fits)
-- Ignore subagent questions (answer before letting them proceed)
-- Accept "close enough" on spec compliance (reviewer found spec issues = not done)
-- Skip review loops (reviewer found issues = implementer fixes = review again)
-- Let implementer self-review replace actual review (both are needed)
-- Tell a reviewer what not to flag, or pre-rate a finding's severity in the dispatch prompt
-- Dispatch a task reviewer without a diff file — generate it first (`scripts/review-package BASE SHA`)
-- Move to next task while the review has open Critical/Important issues
-- Advance to the next wave without the `scripts/verify --strict` barrier passing
-- Re-dispatch a task the progress ledger already marks complete — check the ledger (and `git log`) after any compaction or resume
-
-**If subagent asks questions:**
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
-
-**If reviewer finds issues:**
-- Implementer (same subagent) fixes them
-- Reviewer reviews again
-- Repeat until approved
-- Don't skip the re-review
-
-**If subagent fails task:**
-- Dispatch fix subagent with specific instructions
-- Don't try to fix manually (context pollution)
-
-## Example Workflow
-
-```
-You: Executing the plan with gova-build-execution.
-
-[Read plan file once: docs/superpowers/plans/feature-plan.md]
-[Create todos for all tasks]
-
-Task 1: Projects list
-
-[Run task-brief for Task 1; dispatch implementer with brief + report paths + context]
-
-Implementer: "Before I begin - should status default to 'active'?"
-
-You: "Yes, per the spec's schema."
-
-Implementer: "Got it. Implementing now..."
-[Later] Implementer:
-  - Called execute_sql + scaffold_list(name='project', ...)
-  - Customized static/js/project.js to filter by status
-  - Verified: restarted clean, /projects loads, create form works
-  - Committed
-
-[Run review-package, dispatch task reviewer with the printed path]
-Task reviewer: Spec ✅ - all requirements met, MCP tool called first, nothing extra.
-
-[Mark Task 1 complete]
-
-...
-
-[After all tasks]
-[Final whole-branch review: code-review skill / gova-architect dispatch]
-Final reviewer: All requirements met, ready to continue to security analysis
-
-Done!
-```
+Fresh implementer subagent per task, a task review after each, and one broad
+whole-branch review at the end.
+
+Subagents never inherit your session's history — you construct exactly the
+context each one needs, which keeps them focused and preserves your own context
+for coordination.
+
+**Narrate at most one short line between tool calls.** The ledger and the tool
+results carry the record.
+
+**Do not pause between tasks.** Execute the whole plan. Stop only for a BLOCKED
+status you cannot resolve, ambiguity that genuinely prevents progress, or
+completion. "Should I continue?" wastes the developer's time.
+
+## The model: parallel authoring, serial touching
+
+Subagents **author code**. You own every shared resource. That split is what
+makes parallelism safe without any locking.
+
+Two tasks with disjoint file lists still collide on three shared globals — the
+`app` container (a restart kills a sibling's test run), `go test ./...` (it
+compiles the whole package, so a sibling mid-edit fails your run), and the git
+index (`index.lock`). File-disjointness does not help with any of them. So
+nobody but you touches them.
+
+| | Implementer | You |
+|---|---|---|
+| `gova` commands | never | yes, before dispatch |
+| Edit files | its own task's list only | no |
+| Restart / `go test` | never | once per batch |
+| `git add` / `commit` | never | once per task |
+
+## The loop
+
+1. Read the plan, note its Global Constraints, create a todo per task.
+2. **Form a batch** of up to 3 tasks with no dependency edge between them —
+   neither consumes what another produces (check the plan's `Interfaces:`
+   blocks). A task whose input another task produces waits for the next batch.
+3. **Scaffold the batch yourself**, serially: run each task's `gova` command.
+   These take about a second each and go through the builder's own lock, so
+   `api.json` and the `*_gen.go` files are complete and correct before any
+   subagent starts.
+4. **Dispatch the batch** — up to 3 implementers, concurrently. Each customizes
+   only the files its scaffold produced.
+5. **Verify once**: `scripts/verify`. If it fails, `go test` names the file, and
+   every file belongs to exactly one task — re-dispatch that implementer with
+   the failure text. Repeat until green.
+6. **Commit per task**, so each gets its own reviewable diff. Record the BASE
+   and HEAD for each.
+7. **Review**, in parallel — reviewers are read-only and cannot collide.
+   Critical/Important findings → fix subagent → re-verify → re-review.
+8. Mark each task complete in the todos and the ledger, then start the next batch.
+9. After the last batch: final whole-branch review against the commit the branch
+   started from — the `code-review` skill (Claude Code) or `gova-architect` /
+   `/review` (opencode). Findings → ONE fix subagent with the complete list →
+   hand back to `/build` for the security audit.
+
+## When to run a task alone
+
+An implementer in a batch cannot compile — the package is shared, and a sibling
+mid-edit would fail its build. It writes carefully and your batch verify is the
+gate. That is the right trade for ordinary customization and the wrong one for
+anything intricate.
+
+**Run a task solo** — batch of one, and tell the implementer it may verify
+itself — when it rewrites shared infrastructure, when its logic is subtle enough
+that the author needs to iterate against a running app, or when it came back
+BLOCKED once already.
+
+**Batches of one are always valid.** The batching is an optimization; when in
+doubt, serialize.
+
+## Pre-flight
+
+Before Task 1, scan the plan once for tasks that contradict each other or the
+Global Constraints, and for anything the plan mandates that the review rubric
+treats as a defect. Present everything you find as one batched question, before
+execution begins — not one interrupt per discovery. If the scan is clean,
+proceed without comment.
+
+## Model selection
+
+Use the least powerful model that can do the job.
+
+- **Mechanical task** (one scaffold call, 1–2 files to customize): fast model.
+- **Integration or judgment**: standard model.
+- **Architecture, and the final whole-branch review**: the most capable model.
+- **Reviews**: scale to the diff's size and risk.
+
+**Always name the model explicitly** — an omitted one inherits your session's,
+usually the most expensive.
+
+**Turn count beats token price.** The cheapest models often take 2–3× the turns
+on multi-step work and cost more overall. Mid-tier is the floor for reviewers,
+and for any task with a customization step — plans specify contracts, not
+bodies, so the implementer is authoring, not transcribing.
+
+Under opencode the model is not a dispatch argument: use `subagent_type`
+`gova-implementer`, `gova-reviewer` or `gova-architect`, whose models live in
+`.opencode/agent/*.md`.
+
+## Implementer statuses
+
+- **DONE** → the files are edited but nothing is committed. Once the whole batch
+  is DONE and verified, commit each task and build its review package from the
+  BASE and HEAD you recorded.
+- **DONE_WITH_CONCERNS** → read them. Correctness or scope concerns get
+  addressed before review; observations get noted.
+- **NEEDS_CONTEXT** → provide it, re-dispatch.
+- **BLOCKED** → assess: missing context (provide it), needs more reasoning
+  (stronger model), too large (split it), or the plan is wrong (escalate to the
+  human). **Never** re-dispatch unchanged.
+
+## Reviewer output
+
+⚠️ "Cannot verify from diff" items do not block the review, but you must resolve
+each before marking the task complete — you hold the cross-task context the
+reviewer lacks. A confirmed gap is a failed spec review: send it back.
+
+Dispatch fix subagents for Critical and Important findings. Record Minor ones in
+the ledger and point the final review at that list to triage before merge.
+
+A finding that conflicts with what the plan requires is the human's call:
+present the finding and the plan text and ask which governs.
+
+## Constructing dispatch prompts
+
+- Hand over artifacts as **files**, not pasted text — everything you paste stays
+  in your context for the rest of the session and is re-read every turn.
+- A dispatch describes one task, not the session's history. Never paste
+  accumulated prior-task summaries into a later dispatch.
+- Copy the plan's binding requirements verbatim into `[GLOBAL_CONSTRAINTS]` —
+  that block is the reviewer's attention lens. Process rules are already in the
+  template.
+- **Never tell a reviewer what not to flag** and never pre-rate a finding's
+  severity. If you think something would be a false positive, let it be raised
+  and adjudicate it.
+- Do not ask a reviewer to re-verify what the implementer already verified on
+  the same code.
+
+## Durable progress
+
+Conversation memory does not survive compaction; the ledger does.
+
+- At skill start: `cat "$(git rev-parse --show-toplevel)/.gova-build/progress.md"`.
+  Tasks marked complete there are DONE — resume at the first that is not.
+- On a clean review, append one line:
+  `Task N: complete (commits <base7>..<head7>, review clean)`.
+- After compaction, trust the ledger and `git log` over your own recollection.
+
+## Templates
+
+- [implementer-prompt.md](implementer-prompt.md)
+- [task-reviewer-prompt.md](task-reviewer-prompt.md)
+
+## Never
+
+- Start on `main` without explicit consent
+- Skip a task review, or accept a report missing either verdict
+- Move on with unfixed Critical/Important findings
+- Put two tasks with a dependency edge in one batch
+- Exceed 3 implementers in a batch
+- Let an implementer run `gova`, restart the app, run the suite, or commit
+- Dispatch a batch before scaffolding all of it yourself
+- Commit a batch before `scripts/verify` is green
+- Make a subagent read the whole plan file — hand it its brief
+- Let implementer self-review replace actual review
+- Re-dispatch a task the ledger already marks complete

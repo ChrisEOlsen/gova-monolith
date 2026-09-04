@@ -1,121 +1,66 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestBuildInspection_ReportsDivergence(t *testing.T) {
+func TestBuildInspection_ReportsMissingFiles(t *testing.T) {
 	m := Manifest{
-		Models:    []Model{{Name: "task", Table: "tasks"}},
-		Endpoints: []Endpoint{{Method: "GET", Path: "/api/v1/tasks", Handler: "TaskListGET"}},
+		Models: []Model{{Name: "widget", Table: "widgets"}, {Name: "gadget", Table: "gadgets"}},
+		Pages:  []Page{{Path: "/widgets", File: "widgets"}, {Path: "/gone", File: "gone"}},
 	}
 	onDisk := onDiskFiles{
-		Models:   []string{}, // Task.go missing
-		Handlers: []string{"task_list.go", "routes_gen.go"},
+		Models: []string{"Widget.go"},
+		Pages:  []string{"widgets.html"},
 	}
+
 	rep := buildInspection(m, onDisk)
+	joined := strings.Join(rep.Divergence, "\n")
 
-	if len(rep.Divergence) == 0 {
-		t.Fatal("expected divergence for missing Task.go")
+	if !strings.Contains(joined, "Gadget.go is missing") {
+		t.Errorf("a model with no file should diverge:\n%s", joined)
 	}
-	joined := strings.Join(rep.Divergence, " ")
-	if !strings.Contains(joined, "task") {
-		t.Errorf("divergence should name the missing model: %v", rep.Divergence)
+	if strings.Contains(joined, "Widget.go is missing") {
+		t.Errorf("a model with a file should not diverge:\n%s", joined)
 	}
-
-	// It must serialize to JSON with the three top-level keys.
-	data, _ := json.Marshal(rep)
-	for _, key := range []string{`"manifest"`, `"on_disk"`, `"divergence"`} {
-		if !strings.Contains(string(data), key) {
-			t.Errorf("inspection JSON missing %s: %s", key, data)
-		}
+	if !strings.Contains(joined, "gone.html is missing") {
+		t.Errorf("a page with no shell should diverge — that route 404s:\n%s", joined)
 	}
 }
 
-func TestBuildInspection_CleanWhenConsistent(t *testing.T) {
-	m := Manifest{
-		// Stamped by the builder that is running this test, which is what a
-		// manifest written by the current tools looks like.
-		Template:  Template{Version: templateVersion(), Fingerprint: templateFingerprint()},
-		Models:    []Model{{Name: "project", Table: "projects"}},
-		Endpoints: []Endpoint{},
-	}
-	onDisk := onDiskFiles{Models: []string{"Project.go"}, Handlers: []string{"routes_gen.go"}}
-	rep := buildInspection(m, onDisk)
+// Auth's models ship as hand-written files, so they are exempt from the
+// "manifest lists it, no generated file" check.
+func TestBuildInspection_SkipsTemplateOwnedModels(t *testing.T) {
+	m := Manifest{Models: []Model{{Name: "user", Table: "users"}}}
+	rep := buildInspection(m, onDiskFiles{})
 	if len(rep.Divergence) != 0 {
-		t.Errorf("expected no divergence, got %v", rep.Divergence)
+		t.Errorf("the template's own user model must not read as divergence: %v", rep.Divergence)
 	}
 }
 
-// The stamp exists so an app can answer "which template am I built from".
-// These are the three ways that answer can be wrong, and each must be visible
-// rather than silent — silence is exactly what let one app carry three
-// already-fixed defects for weeks.
-func TestBuildInspection_TemplateStampDivergence(t *testing.T) {
-	populated := func(tmpl Template) Manifest {
-		return Manifest{
-			Template:  tmpl,
-			Models:    []Model{{Name: "project", Table: "projects"}},
-			Endpoints: []Endpoint{},
-		}
+// The common mistake: src/builder is updated on disk but the mcp image is not
+// rebuilt, so the running tools are the old binary.
+func TestBuildInspection_StaleBuilderVersionDiverges(t *testing.T) {
+	populated := func(v string) Manifest {
+		return Manifest{BuilderVersion: v, Models: []Model{}, Endpoints: []Endpoint{}, Pages: []Page{}}
 	}
-	onDisk := onDiskFiles{Models: []string{"Project.go"}, Handlers: []string{"routes_gen.go"}}
 
-	t.Run("no stamp at all", func(t *testing.T) {
-		// A manifest written before stamping existed: the app predates it and
-		// cannot say what built it.
-		rep := buildInspection(populated(Template{}), onDisk)
-		if !containsSub(rep.Divergence, "carries no template stamp") {
-			t.Errorf("an unstamped manifest must be flagged, got %v", rep.Divergence)
-		}
-	})
-
-	t.Run("empty project is not nagged", func(t *testing.T) {
-		// A fresh checkout has an empty manifest and no stamp yet. Flagging
-		// that would make the very first inspect_app of every new project cry
-		// wolf, which is how a warning stops being read.
-		rep := buildInspection(Manifest{}, onDiskFiles{})
-		if containsSub(rep.Divergence, "template stamp") {
-			t.Errorf("an empty project must not be flagged, got %v", rep.Divergence)
-		}
-	})
-
-	t.Run("stale running binary", func(t *testing.T) {
-		// src/builder synced on disk, mcp image never rebuilt: the manifest was
-		// written by a version the running tools are not.
-		rep := buildInspection(populated(Template{Version: "1999-01-01.1", Fingerprint: "sha256:old"}), onDisk)
-		if !containsSub(rep.Divergence, "docker compose up -d --build mcp") {
-			t.Errorf("a version mismatch must name the rebuild, got %v", rep.Divergence)
-		}
-	})
-
-	t.Run("templates edited without bumping VERSION", func(t *testing.T) {
-		// The version is a promise a human makes; the fingerprint is what the
-		// binary carries. This is them coming apart.
-		rep := buildInspection(populated(Template{Version: templateVersion(), Fingerprint: "sha256:different"}), onDisk)
-		if !containsSub(rep.Divergence, "without bumping src/builder/VERSION") {
-			t.Errorf("an edited template must be flagged, got %v", rep.Divergence)
-		}
-	})
-
-	t.Run("current builder is clean", func(t *testing.T) {
-		rep := buildInspection(populated(Template{Version: templateVersion(), Fingerprint: templateFingerprint()}), onDisk)
-		if len(rep.Divergence) != 0 {
-			t.Errorf("a manifest written by this builder must be clean, got %v", rep.Divergence)
-		}
-		if rep.Builder.Version != templateVersion() {
-			t.Errorf("inspection must report the running builder, got %q", rep.Builder.Version)
-		}
-	})
-}
-
-func containsSub(list []string, sub string) bool {
-	for _, s := range list {
-		if strings.Contains(s, sub) {
-			return true
-		}
+	rep := buildInspection(populated("1999-01-01.1"), onDiskFiles{})
+	if len(rep.Divergence) == 0 || !strings.Contains(strings.Join(rep.Divergence, "\n"), "rebuild the image") {
+		t.Errorf("a version mismatch should say to rebuild: %v", rep.Divergence)
 	}
-	return false
+
+	rep = buildInspection(populated(builderVersion), onDiskFiles{})
+	if len(rep.Divergence) != 0 {
+		t.Errorf("a matching version must not diverge: %v", rep.Divergence)
+	}
+	if rep.BuilderVersion != builderVersion {
+		t.Errorf("BuilderVersion = %q, want %q", rep.BuilderVersion, builderVersion)
+	}
+
+	// An unstamped manifest is not an error — a hand-written one is legitimate.
+	if rep := buildInspection(populated(""), onDiskFiles{}); len(rep.Divergence) != 0 {
+		t.Errorf("an unstamped manifest must not diverge: %v", rep.Divergence)
+	}
 }

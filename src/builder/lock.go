@@ -5,35 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"syscall"
 )
 
-// The builder is called by more than one process (one MCP stdio session per
-// harness session — Claude Code and opencode each get their own) and each
-// process is itself concurrent (mcp-go dispatches tool calls on goroutines).
-// Every mutation of the workspace — api.json, routes_gen.go, pages_gen.go,
-// model/handler/page files — is therefore serialized two ways:
+// Every workspace mutation — api.json, the *_gen.go files, model/handler/page
+// files — is serialized by an flock on .gova-lock: LOCK_EX for mutators,
+// LOCK_SH for readers. The CLI is one process per invocation, so a single
+// cross-process lock covers every caller, including parallel subagents sharing
+// the bind-mounted /src.
 //
-//   - workspaceMu is in-process. It covers the common case: parallel tool
-//     calls from one session cannot interleave their read-modify-write.
-//   - withWorkspaceLock holds flocks on .gova-lock beside the code it
-//     protects: LOCK_EX for mutators, LOCK_SH for readers. It covers the
-//     rest — two harness sessions sharing the same bind-mounted /src. The
-//     file is beside /src/app, in the mounted tree, so every session's
-//     open() lands on the same inode.
-//
-// Both guards are held across the full read→upsert→write→regenerate
-// transaction in updateManifestAt. A tool that mutated the workspace without
-// holding them would reintroduce the lost-update race this closes: two
-// scaffolds read the same base manifest, both write, and the second silently
-// erases the first's registration — while inspect_app reports divergence and
-// nothing repairs it.
-
-// workspaceMu serializes workspace access within one builder process. Not
-// re-entrant: a function called inside a locked section must use the *Locked
-// variant, never call withWorkspaceLock again.
-var workspaceMu sync.Mutex
+// The lock is held across the full read→upsert→write→regenerate transaction in
+// updateManifestAt. Without it two scaffolds read the same base manifest and
+// the second write silently erases the first's registration.
 
 // lockFilePath is where the cross-process lock lives. It sits in /src, the
 // bind mount every harness session shares, next to the code it protects.
@@ -50,52 +33,25 @@ func lockPath() string {
 	return lockFilePath
 }
 
-// withWorkspaceLock runs fn holding the in-process mutex and an exclusive
-// flock. MUST NOT BE NESTED — sync.Mutex is not re-entrant, and a nested call
-// deadlocks against itself. Code running inside the critical section that
-// needs a locked helper calls the helper's *Locked variant directly.
-func withWorkspaceLock(fn func() error) error {
-	workspaceMu.Lock()
-	f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		workspaceMu.Unlock()
-		return fmt.Errorf("workspace lock: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		workspaceMu.Unlock()
-		return fmt.Errorf("workspace lock: %w", err)
-	}
-	defer func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
-		workspaceMu.Unlock()
-	}()
-	return fn()
-}
+// withWorkspaceLock runs fn holding an exclusive flock. MUST NOT BE NESTED —
+// a nested call would block on itself. Code inside the critical section calls
+// the *Locked variant of a helper directly.
+func withWorkspaceLock(fn func() error) error { return withFlock(syscall.LOCK_EX, fn) }
 
-// withWorkspaceRead runs fn holding the in-process mutex and a SHARED flock.
-// Shared means concurrent readers in different processes coexist; the
-// exclusive flock of a mutator still excludes them. In-process the mutex
-// alone already orders readers behind mutators, since a mutator holds
-// workspaceMu for its whole transaction.
-func withWorkspaceRead(fn func() error) error {
-	workspaceMu.Lock()
+// withWorkspaceRead runs fn holding a SHARED flock: concurrent readers coexist,
+// and a mutator's exclusive lock still excludes them.
+func withWorkspaceRead(fn func() error) error { return withFlock(syscall.LOCK_SH, fn) }
+
+func withFlock(mode int, fn func() error) error {
 	f, err := os.OpenFile(lockPath(), os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		workspaceMu.Unlock()
 		return fmt.Errorf("workspace lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
-		f.Close()
-		workspaceMu.Unlock()
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), mode); err != nil {
 		return fmt.Errorf("workspace lock: %w", err)
 	}
-	defer func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
-		workspaceMu.Unlock()
-	}()
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return fn()
 }
 

@@ -1,59 +1,97 @@
-# GOVA Monolith: AI-Second
+# GOVA Monolith
 
-A template repository for building AI-driven web applications with the GOVA stack.
+A template for building web apps with an AI assistant.
 
-**G**o · **V**anilla JS · **A**lpine-free · SQLite WAL
+**Go · Vanilla JS · SQLite**
 
-## Core Idea
+## What it is
 
-The AI doesn't write the important code — it calls MCP tools that render deterministic templates. No HTMX, no Alpine.js, no Templ compile step. Go handles JSON API. Vanilla ES modules handle all DOM rendering.
+Clone it and you already have a working web app: a Go server, a database, and a
+complete sign-in system — registration, login, sessions, password hashing, rate
+limiting, CSRF. None of that is something you ask for; it is committed code.
 
-**Two containers, one SQLite file.** `app` runs the Go server; `mcp` runs the builder tools so restarting `app` never disconnects your agent. No Redis, no MySQL, no Nginx, no frontend build step.
-
-## Built In, Not Bolted On
-
-- **Auth, done right by default.** Signed HMAC-SHA256 sessions, double-submit CSRF, bcrypt with timing-safe comparison, rate-limited login (5 attempts / 15 min). Scaffold it once with `scaffold_auth`; the security work is already in the template.
-- **Machine-readable API contract.** Every scaffold self-registers into `src/app/api.json` — a manifest of models (with types and nullability), endpoints and pages, served at `GET /api/v1/_manifest`. Routes and page routes are generated from it (`handlers/routes_gen.go`, `handlers/pages_gen.go`), so `main.go` is never hand-wired. `scaffold_resource` generates full CRUD (list/detail/create/update/delete + `?sort=`/`?filter=`). A native client reads the manifest instead of reverse-engineering source; it also records which template build wrote it, so an app can tell when its vendored generator has fallen behind.
-- **Scaffolds ship with tests.** Every model, handler, and auth endpoint the MCP tools generate comes with a Go test alongside it — CRUD roundtrips, login/CSRF/rate-limit coverage, mobile bearer-token flows. `docker compose exec app go test ./...` runs all of it.
-- **Designed, not scaffolded.** The build carries an explicit design bar — deliberate palette, real typographic hierarchy, generous spacing, smooth motion on every interaction, designed empty and loading states — so the output looks like a product rather than a template with default styling. Plain Tailwind and CSS transitions; no framework, no CDN, no animation library.
-
-## Quick Start
+For everything else there is a small CLI called `gova`. You give it a table and
+it writes the feature:
 
 ```bash
-cp env.example .env
-# Edit .env: set APP_NAME, SESSION_SECRET (openssl rand -hex 32)
+./gova sql -query "CREATE TABLE projects (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    status     TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);"
+
+./gova resource -name project -fields name:string,status:string
 ```
 
-| Tool | Install | Context file | Commands |
-|---|---|---|---|
-| **Claude Code** | `./install-claude.sh` | `CLAUDE.md` | `/build`, `/launch`, `/security:analyze` |
-| **opencode** | `./install-opencode.sh` | `AGENTS.md` → `CLAUDE.md` | `/build`, `/launch`, `/security-analyze` |
+That second command writes the database code, the API endpoints, a web page with
+a form and delete buttons, and tests for all of it — then wires up the routes.
+The AI customizes what it generated rather than writing it from scratch.
 
-Run either, or both — they share one `.env` and one pair of containers, and the
-rules, commands and skills are single files that both harnesses read (see
-`CLAUDE.md` § Harnesses). The opencode installer also offers a model profile:
-Anthropic, or Ollama Cloud for the times you want to run the build on
-`ollama-cloud` models.
+The point: **the AI decides what to build; templates decide how.** Generated
+code arrives already wired, already tested, and already following the security
+rules, so a feature costs about a thousand tokens instead of a thousand lines of
+guesswork.
+
+## Getting started
+
+```bash
+cp env.example .env          # set APP_NAME and SESSION_SECRET
+./install-claude.sh          # or ./install-opencode.sh, or both
+```
 
 Then:
-1. Fill in `SEED.md` with your app idea
-2. Run `/build`
-3. Review the running app at `http://localhost:[APP_PORT]`
-4. Run `/launch` to go live via Cloudflare Tunnel
+
+1. Describe your app in `SEED.md`
+2. Run `/build` — the assistant designs it, plans it, and builds it
+3. Open `http://localhost:8080`
+4. Run `/launch` to put it online through a Cloudflare Tunnel
+
+## The commands
+
+Run `./gova help` for details.
+
+| Command | What it makes |
+|---|---|
+| `gova inspect` | what exists right now, and anything out of sync |
+| `gova sql` | a table |
+| `gova model` | database code for a table |
+| `gova handler` | one custom API endpoint |
+| `gova page` | a web page (HTML + JS) |
+| `gova resource` | the whole thing: data, API, page, form, tests |
+
+## How it fits together
+
+**One file describes the app.** `src/app/api.json` lists every data model, API
+endpoint and page. The CLI writes it, and the server's routing is generated from
+it — so nobody hand-wires a route.
+
+**Two containers.** `app` runs the server; `builder` holds the `gova` CLI. One
+SQLite file underneath. No Redis, no Nginx, no frontend build step.
+
+**Plain everything.** Go returns JSON. Vanilla ES modules render the page.
+Tailwind does the styling. No framework, no bundler, no Node.
+
+## iOS
+
+[`gova-ios`](../gova-ios) is a companion template that turns an app built here
+into a native iPhone app. It reads the same `api.json`, so you describe your data
+once.
+
+## Reference
+
+- [`CLAUDE.md`](CLAUDE.md) — the rules the assistant works under
+- [`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) — what the API guarantees
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — why the tricky parts are built the way they are
 
 ## Stack
 
-| Layer | Technology |
+| Layer | Choice |
 |---|---|
 | Language | Go 1.25 |
 | Router | chi |
-| Frontend | Vanilla ES modules (no bundler) |
-| Database | SQLite (WAL mode) |
+| Frontend | Vanilla ES modules |
+| Database | SQLite (WAL) |
 | CSS | Tailwind CLI |
-| Sessions | Signed cookies (HMAC-SHA256) |
-| Cache | In-process map + mutex |
-| Deployment | Cloudflare Tunnel |
-
-## Token Efficiency
-
-Each feature costs ~1,000 tokens to scaffold — the MCP server renders templates, not the LLM.
+| Auth | Signed cookies + bearer tokens |
+| Deploy | Cloudflare Tunnel |

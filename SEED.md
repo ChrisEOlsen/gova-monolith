@@ -14,8 +14,10 @@
 - [ ] Feature 3
 
 ## Auth
-- [ ] User login required
-- [ ] Public registration allowed
+Sessions, registration and login ship with the template — you do not need to ask
+for them. Note here only what differs:
+- [ ] Which pages and endpoints require a signed-in user (default: public)
+- [ ] Public sign-up disabled (invite or admin-created accounts only)
 
 ## External Integrations
 - [ ] Payments (Stripe)

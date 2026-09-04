@@ -5,86 +5,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
 	"gova/app/cache"
-	{{- if .HasPassword}}
-	"golang.org/x/crypto/bcrypt"
-	{{- end}}
+	"gova/app/db"
 )
 
 type {{.PascalName}} struct {
-	ID        int64     `json:"id"`
+	ID        int64 `json:"id"`
 	{{- range .Fields}}
-	{{toPascal .Name}} {{goFieldType .}} `json:"{{jsonName .}}"`
+	{{toPascal .Name}} {{goFieldType .}} `json:"{{.Name}}"`
 	{{- end}}
 	CreatedAt Time `json:"created_at"`
 }
-{{- if .HasPassword}}
 
-// {{.Name}}MaxPasswordBytes is bcrypt's hard input limit, in BYTES rather than
-// runes: the limit is on byte length, so a passphrase of multi-byte characters
-// reaches it sooner than its character count suggests.
-const {{.Name}}MaxPasswordBytes = 72
-
-// Err{{.PascalName}}PasswordTooLong is what Create/Update return for an
-// over-long password, so a handler can answer 400 with something actionable.
-//
-// bcrypt.GenerateFromPassword REJECTS an input over 72 bytes rather than
-// truncating it, so without a named sentinel the user who chose the longest
-// passphrase — the strongest thing they could have done — got a generic 500
-// that retrying never fixed.
-//
-// It is bcrypt's own exported sentinel, aliased, and that is deliberate:
-// scaffold_auth's User model declares a package-level `ErrPasswordTooLong` of
-// its own, and two files in one models package cannot both declare that name.
-// A model-scoped alias lets handlers branch on a models.* name without
-// importing bcrypt, while errors.Is still matches bcrypt.ErrPasswordTooLong.
-var Err{{.PascalName}}PasswordTooLong = bcrypt.ErrPasswordTooLong
-{{- end}}
-
-// {{.Name}}Page is the cache payload for a single page of results — items and
-// total travel together so a cache hit does not need a second COUNT query.
+// {{.Name}}Page is the cache payload for one page of results — items and total
+// travel together so a cache hit needs no second COUNT query.
 type {{.Name}}Page struct {
 	Items []{{.PascalName}} `json:"items"`
 	Total int               `json:"total"`
 }
 
 type {{.PascalName}}Model struct {
-	readDB  *sql.DB
-	writeDB *sql.DB
-	cache   *cache.Cache
+	db    *db.DB
+	cache *cache.Cache
 }
 
-func New{{.PascalName}}Model(readDB, writeDB *sql.DB, c *cache.Cache) *{{.PascalName}}Model {
-	return &{{.PascalName}}Model{readDB: readDB, writeDB: writeDB, cache: c}
+func New{{.PascalName}}Model(database *db.DB, c *cache.Cache) *{{.PascalName}}Model {
+	return &{{.PascalName}}Model{db: database, cache: c}
 }
 
-// {{.Name}}AllowedColumns is the whitelist for sort/filter — the model's real
-// columns. orderByClause/filterField reject anything not in this list, so the
-// only column names ever placed into SQL come from here.
-{{- if .HasPassword}}
-//
-// The credential column is deliberately ABSENT. This list is exactly what a
-// query string may name, so listing the hash here turned every generated list
-// endpoint into an ordering oracle over it (?sort=<hash column> sorts the table
-// by hash) and let ?filter=<hash column>:<guess> probe stored hashes — with the
-// guess interpolated into the cache key on the way past.
-{{- end}}
-var {{.Name}}AllowedColumns = []string{"id", {{range publicFields .Fields}}"{{.Name}}", {{end}}"created_at"}
+// {{.Name}}AllowedColumns is the sort/filter whitelist. orderByClause and
+// filterField reject anything absent from it, so the only column names ever
+// placed into SQL come from here.
+var {{.Name}}AllowedColumns = []string{"id", {{range .Fields}}"{{.Name}}", {{end}}"created_at"}
 
-// GetPage returns one window of rows plus the total (of the filtered set).
-// Callers clamp limit and offset — see handlers/paging.go. Sort/filter columns
-// are validated against {{.Name}}AllowedColumns; an unknown column yields
-// ErrInvalidQuery (handlers map it to 422).
-{{- if .HasPassword}}
-//
-// The credential column is NOT SELECTED, so the struct's password field comes
-// back zero from a list. That is the point: a list has no business loading
-// credentials, and this query's result is also written to the cache. With the
-// column selected, the hash reached the cache's json.Marshal — where `json:"-"`
-// drops it — so a cache MISS returned the hash populated and a cache HIT
-// returned "", making the field's value a function of cache state. Find(id)
-// still selects it: single row, no cache.
-{{- end}}
+// GetPage returns one window of rows plus the total of the filtered set.
+// Handlers clamp limit and offset. An unknown sort/filter column yields
+// ErrInvalidQuery, which handlers map to 422.
 func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.PascalName}}, int, error) {
 	orderBy, err := orderByClause(opts.Sort, {{.Name}}AllowedColumns)
 	if err != nil {
@@ -110,26 +67,26 @@ func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.
 	}
 
 	var total int
-	if err := m.readDB.QueryRow("SELECT COUNT(*) FROM {{.PluralName}}"+where, args...).Scan(&total); err != nil {
+	if err := m.db.Read.QueryRow("SELECT COUNT(*) FROM {{.PluralName}}"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	query := "SELECT id{{colsPrefixed (publicFields .Fields)}}, created_at FROM {{.PluralName}}" + where + " " + orderBy + " LIMIT ? OFFSET ?"
-	rows, err := m.readDB.Query(query, append(args, limit, offset)...)
+	query := "SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}}" + where + " " + orderBy + " LIMIT ? OFFSET ?"
+	rows, err := m.db.Read.Query(query, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 
-	// Initialized non-nil: a nil slice marshals as JSON null, which breaks
-	// strictly-typed clients decoding an array.
+	// Non-nil: a nil slice marshals as JSON null, which breaks a typed client
+	// decoding an array. See docs/API-CONTRACT.md.
 	items := []{{.PascalName}}{}
 	for rows.Next() {
 		var item {{.PascalName}}
-{{scanDecls (publicFields .Fields) "\t\t"}}		if err := rows.Scan(&item.ID{{scanPrefixed (publicFields .Fields) "&item."}}, &item.CreatedAt); err != nil {
+{{scanDecls .Fields "\t\t"}}		if err := rows.Scan(&item.ID, {{scanTargets .Fields "&item."}}, &item.CreatedAt); err != nil {
 			return nil, 0, err
 		}
-{{scanAssigns (publicFields .Fields) "item." "\t\t"}}		items = append(items, item)
+{{scanAssigns .Fields "item." "\t\t"}}		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
@@ -142,7 +99,7 @@ func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.
 }
 
 func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
-	row := m.readDB.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?", id)
+	row := m.db.Read.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?", id)
 	var item {{.PascalName}}
 {{scanDecls .Fields "\t"}}	if err := row.Scan(&item.ID, {{scanTargets .Fields "&item."}}, &item.CreatedAt); err != nil {
 		return nil, err
@@ -150,14 +107,12 @@ func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
 {{scanAssigns .Fields "item." "\t"}}	return &item, nil
 }
 
-{{if .HasPassword}}// Create takes the PLAINTEXT password and does the bcrypt itself; the column it
-// lands in stores the hash, which is why the parameter is not named after it.
-{{end}}func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
-{{passwordGuards . "\t" "0, "}}	// A nil pointer binds to SQL NULL directly — no sql.Null* wrapper needed
+func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
+	// A nil pointer binds to SQL NULL directly — no sql.Null* wrapper needed
 	// on the insert path.
-	res, err := m.writeDB.Exec(
+	res, err := m.db.Write.Exec(
 		"INSERT INTO {{.PluralName}} ({{joinNames .Fields}}) VALUES ({{placeholders .Fields}})",
-		{{insertArgs .Fields}},
+		{{joinNames .Fields}},
 	)
 	if err != nil {
 		return 0, err
@@ -167,18 +122,25 @@ func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
 }
 
 func (m *{{.PascalName}}Model) Delete(id int64) error {
-	_, err := m.writeDB.Exec("DELETE FROM {{.PluralName}} WHERE id = ?", id)
-	if err == nil {
-		m.cache.Bust("{{.PluralName}}:")
+	res, err := m.db.Write.Exec("DELETE FROM {{.PluralName}} WHERE id = ?", id)
+	if err != nil {
+		return err
 	}
-	return err
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	m.cache.Bust("{{.PluralName}}:")
+	return nil
 }
-
 {{if .CRUD}}
 func (m *{{.PascalName}}Model) Update(id int64, {{createParams .Fields}}) error {
-{{passwordGuards . "\t" ""}}	res, err := m.writeDB.Exec(
+	res, err := m.db.Write.Exec(
 		"UPDATE {{.PluralName}} SET {{updateSet .Fields}} WHERE id = ?",
-		{{insertArgs .Fields}}, id,
+		{{joinNames .Fields}}, id,
 	)
 	if err != nil {
 		return err
