@@ -84,7 +84,7 @@ func TestSessionEpochBump(t *testing.T) {
 	if got := m.SessionEpoch(id); got != 0 {
 		t.Errorf("fresh user epoch = %d, want 0", got)
 	}
-	if err := m.BumpSessionEpoch(id); err != nil {
+	if err := m.RevokeAllSessions(id); err != nil {
 		t.Fatalf("bump: %v", err)
 	}
 	if got := m.SessionEpoch(id); got != 1 {
@@ -175,5 +175,44 @@ func TestClearAttemptsForgetsOnlyItsBucket(t *testing.T) {
 	}
 	if locked, _ := m.IsRateLimited("login:b"); !locked {
 		t.Error("clearing one bucket released another")
+	}
+}
+
+// "Log out everywhere" is one promise covering both credential kinds. The epoch
+// bump retires session cookies; the delete retires bearer tokens. A native
+// client left signed in after this call is the containment failure the method
+// exists to prevent.
+func TestRevokeAllSessions_RetiresBearerTokensToo(t *testing.T) {
+	m := newUserModel(t)
+	id, err := m.Create("Ada", "ada@example.com", "password123")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	other, err := m.Create("Bob", "bob@example.com", "password123")
+	if err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	tokens := NewMobileTokenModel(m.db)
+	if err := tokens.Issue(HashToken("ada-token"), id, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if err := tokens.Issue(HashToken("bob-token"), other, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("issue other: %v", err)
+	}
+
+	if err := m.RevokeAllSessions(id); err != nil {
+		t.Fatalf("RevokeAllSessions: %v", err)
+	}
+
+	if got := m.SessionEpoch(id); got != 1 {
+		t.Errorf("epoch = %d, want 1 — outstanding cookies were not retired", got)
+	}
+	if _, ok := tokens.UserIDForToken("ada-token"); ok {
+		t.Error("the revoked user's bearer token still authenticates")
+	}
+	// Another account's tokens are untouched: revocation is per user.
+	if _, ok := tokens.UserIDForToken("bob-token"); !ok {
+		t.Error("another user's bearer token was revoked too")
 	}
 }

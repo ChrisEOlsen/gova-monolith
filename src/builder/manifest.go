@@ -43,6 +43,12 @@ type Model struct {
 	Name   string       `json:"name"`
 	Table  string       `json:"table"`
 	Fields []ModelField `json:"fields"`
+	// Owned marks a per-user resource: the table carries a user_id column and
+	// every generated query is scoped to the session's user. Like id and
+	// created_at, user_id is implicit — it is deliberately absent from Fields,
+	// because a client neither sends it nor reads it back. See
+	// docs/DECISIONS.md § 12.
+	Owned bool `json:"owned,omitempty"`
 }
 
 type ModelField struct {
@@ -327,7 +333,8 @@ func regeneratePagesAt(handlersDir string, m Manifest) error {
 
 // fieldsToModel converts Field records into a manifest Model, adding the
 // implicit id (first) and created_at (last) columns every generated table has.
-func fieldsToModel(name, table string, fields []Field) Model {
+// user_id, on an owned model, is implicit in the same way and likewise absent.
+func fieldsToModel(name, table string, fields []Field, owned bool) Model {
 	out := make([]ModelField, 0, len(fields)+2)
 	out = append(out, ModelField{Name: "id", Type: "int", Nullable: false})
 	for _, f := range fields {
@@ -337,7 +344,7 @@ func fieldsToModel(name, table string, fields []Field) Model {
 		})
 	}
 	out = append(out, ModelField{Name: "created_at", Type: "timestamp", Nullable: false})
-	return Model{Name: name, Table: table, Fields: out}
+	return Model{Name: name, Table: table, Fields: out, Owned: owned}
 }
 
 // parseBodySchemaArg parses a create_handler schema argument. Empty input means

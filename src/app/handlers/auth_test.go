@@ -167,7 +167,7 @@ func TestLoginPOST_MissingFields(t *testing.T) {
 
 func TestLoginPOST_SessionCarriesCurrentEpoch(t *testing.T) {
 	database, users, id := authFixture(t)
-	if err := users.BumpSessionEpoch(id); err != nil {
+	if err := users.RevokeAllSessions(id); err != nil {
 		t.Fatalf("bump: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func authProbe(t *testing.T, database *db.DB, c *http.Cookie) int {
 	if c == nil {
 		t.Fatal("no session cookie to probe")
 	}
-	h := middleware.Auth(models.NewUserModel(database))(
+	h := middleware.Auth(models.NewUserModel(database), models.NewMobileTokenModel(database))(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if middleware.UserID(r) == 0 {
 				w.WriteHeader(http.StatusTeapot)

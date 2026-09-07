@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -23,8 +22,7 @@ func RegisterPOST(database *db.DB) http.HandlerFunc {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			jsonError(w, "invalid request body", http.StatusBadRequest)
+		if !readJSON(w, r, &body) {
 			return
 		}
 		name := strings.TrimSpace(body.Name)

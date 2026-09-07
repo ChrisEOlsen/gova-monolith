@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -11,10 +10,16 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gova/app/cache"
 	"gova/app/db"
+{{- if .Owned}}
+	"gova/app/middleware"
+{{- end}}
 	"gova/app/models"
 )
 
-type {{.Name}}Request struct {
+{{if .Owned}}// {{.Name}}Request is what a client may set. {{ownerColumn}} is deliberately
+// absent: the owner comes from the session, so there is no field for a client
+// to put someone else's id into.
+{{end}}type {{.Name}}Request struct {
 	{{- range .Fields}}
 	{{toPascal .Name}} {{goFieldTypeQualified .}} `json:"{{.Name}}"`
 	{{- end}}
@@ -23,6 +28,15 @@ type {{.Name}}Request struct {
 func parse{{.PascalName}}ID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 }
+{{if .Owned}}
+// owner{{.PascalName}} is the user every query below is scoped to. The route
+// carries middleware.RequireAuth (auth:true in api.json), so by the time a
+// handler runs this is a real user id — reading it is not a second auth check,
+// it is the parameter the model needs.
+func owner{{.PascalName}}(r *http.Request) int64 {
+	return middleware.UserID(r)
+}
+{{end}}
 
 // {{.PascalName}}ListGET handles GET /api/v1/{{.PluralName}}
 // Query: ?limit=<1..200>&offset=<0..>&sort=<[-]col>&filter=<col:value>
@@ -37,7 +51,7 @@ func {{.PascalName}}ListGET(database *db.DB, appCache *cache.Cache) http.Handler
 				opts.FilterField, opts.FilterValue = k, v
 			}
 		}
-		items, total, err := model.GetPage(limit, offset, opts)
+		items, total, err := model.GetPage({{if .Owned}}owner{{.PascalName}}(r), {{end}}limit, offset, opts)
 		if err != nil {
 			if errors.Is(err, models.ErrInvalidQuery) {
 				jsonError(w, "invalid sort/filter column; allowed: id, {{joinNames .Fields}}, created_at", http.StatusUnprocessableEntity)
@@ -59,9 +73,11 @@ func {{.PascalName}}DetailGET(database *db.DB, appCache *cache.Cache) http.Handl
 			jsonError(w, "invalid id", http.StatusUnprocessableEntity)
 			return
 		}
-		item, err := model.Find(id)
+		item, err := model.Find(id{{if .Owned}}, owner{{.PascalName}}(r){{end}})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
+				// 404 for a row that belongs to someone else, exactly as for a
+				// row that does not exist. A 403 here would confirm the id.
 				jsonError(w, "not found", http.StatusNotFound)
 				return
 			}
@@ -77,16 +93,15 @@ func {{.PascalName}}CreatePOST(database *db.DB, appCache *cache.Cache) http.Hand
 	model := models.New{{.PascalName}}Model(database, appCache)
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req {{.Name}}Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonError(w, "invalid request body", http.StatusUnprocessableEntity)
+		if !readJSON(w, r, &req) {
 			return
 		}
-		id, err := model.Create({{structCallArgs .Fields "req."}})
+		id, err := model.Create({{if .Owned}}owner{{.PascalName}}(r), {{end}}{{structCallArgs .Fields "req."}})
 		if err != nil {
 			jsonError(w, "failed to create", http.StatusInternalServerError)
 			return
 		}
-		item, err := model.Find(id)
+		item, err := model.Find(id{{if .Owned}}, owner{{.PascalName}}(r){{end}})
 		if err != nil {
 			jsonError(w, "created but failed to load", http.StatusInternalServerError)
 			return
@@ -105,11 +120,10 @@ func {{.PascalName}}UpdatePUT(database *db.DB, appCache *cache.Cache) http.Handl
 			return
 		}
 		var req {{.Name}}Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonError(w, "invalid request body", http.StatusUnprocessableEntity)
+		if !readJSON(w, r, &req) {
 			return
 		}
-		if err := model.Update(id, {{structCallArgs .Fields "req."}}); err != nil {
+		if err := model.Update(id{{if .Owned}}, owner{{.PascalName}}(r){{end}}, {{structCallArgs .Fields "req."}}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				jsonError(w, "not found", http.StatusNotFound)
 				return
@@ -117,7 +131,7 @@ func {{.PascalName}}UpdatePUT(database *db.DB, appCache *cache.Cache) http.Handl
 			jsonError(w, "failed to update", http.StatusInternalServerError)
 			return
 		}
-		item, err := model.Find(id)
+		item, err := model.Find(id{{if .Owned}}, owner{{.PascalName}}(r){{end}})
 		if err != nil {
 			jsonError(w, "updated but failed to load", http.StatusInternalServerError)
 			return
@@ -135,7 +149,7 @@ func {{.PascalName}}DeleteDELETE(database *db.DB, appCache *cache.Cache) http.Ha
 			jsonError(w, "invalid id", http.StatusUnprocessableEntity)
 			return
 		}
-		if err := model.Delete(id); err != nil {
+		if err := model.Delete(id{{if .Owned}}, owner{{.PascalName}}(r){{end}}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				jsonError(w, "not found", http.StatusNotFound)
 				return

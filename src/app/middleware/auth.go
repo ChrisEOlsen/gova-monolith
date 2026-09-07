@@ -32,6 +32,14 @@ type EpochStore interface {
 	SessionEpoch(userID int64) int64
 }
 
+// TokenStore resolves a native client's bearer token to its user, or reports
+// that it is unknown, expired or revoked. Implemented by
+// models.MobileTokenModel, which does the hashing — the raw token never leaves
+// the request and this package never learns how it is stored.
+type TokenStore interface {
+	UserIDForToken(rawToken string) (int64, bool)
+}
+
 type sessionPayload struct {
 	UserID    int64 `json:"uid"`
 	Epoch     int64 `json:"epo"`
@@ -62,7 +70,7 @@ func SetSession(w http.ResponseWriter, userID, epoch int64) {
 }
 
 // ClearSession deletes the cookie from this browser. It cannot reach copies on
-// other devices — see models.UserModel.BumpSessionEpoch for that.
+// other devices — see models.UserModel.RevokeAllSessions for that.
 func ClearSession(w http.ResponseWriter) {
 	http.SetCookie(w, sessionCookie("", -1))
 }
@@ -93,12 +101,21 @@ func UserID(r *http.Request) int64 {
 	return v
 }
 
-// Auth reads the session cookie and puts the user id in the request context.
-// It never blocks: RequireAuth and RequirePageAuth do that.
-func Auth(store EpochStore) func(http.Handler) http.Handler {
+// Auth identifies the caller and puts their user id in the request context. It
+// never blocks: RequireAuth and RequirePageAuth do that.
+//
+// Both credential kinds are read here, cookie first. That is what makes
+// `auth: true` on a route mean the same thing to a browser and to a native
+// client — before this, RequireAuth read only the cookie, so every guarded
+// endpoint answered 401 to the iOS client no matter how valid its token was,
+// and the bearer credential reached exactly three hand-written handlers.
+func Auth(sessions EpochStore, tokens TokenStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			uid, ok := sessionUser(r, store)
+			uid, ok := sessionUser(r, sessions)
+			if !ok {
+				uid, ok = bearerUser(r, tokens)
+			}
 			if !ok {
 				next.ServeHTTP(w, r)
 				return
@@ -106,6 +123,28 @@ func Auth(store EpochStore) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), UserIDKey, uid)))
 		})
 	}
+}
+
+// BearerToken returns the raw token from an Authorization header, or "".
+// Exported because handlers need the same value to revoke it on logout.
+func BearerToken(r *http.Request) string {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return ""
+	}
+	return strings.TrimPrefix(auth, prefix)
+}
+
+func bearerUser(r *http.Request, tokens TokenStore) (int64, bool) {
+	if tokens == nil {
+		return 0, false
+	}
+	token := BearerToken(r)
+	if token == "" {
+		return 0, false
+	}
+	return tokens.UserIDForToken(token)
 }
 
 func sessionUser(r *http.Request, store EpochStore) (int64, bool) {
@@ -138,6 +177,7 @@ func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if UserID(r) == 0 {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"ok":false,"error":"unauthorized","code":"unauthorized"}`))
 			return

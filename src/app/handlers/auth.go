@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
@@ -17,7 +16,7 @@ import (
 var dummyHash = mustDummyHash()
 
 func mustDummyHash() []byte {
-	h, err := bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), bcrypt.DefaultCost)
+	h, err := bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), models.BcryptCost)
 	if err != nil {
 		panic(err)
 	}
@@ -31,8 +30,7 @@ type credentials struct {
 
 func decodeCredentials(w http.ResponseWriter, r *http.Request) (credentials, bool) {
 	var c credentials
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
+	if !readJSON(w, r, &c) {
 		return c, false
 	}
 	c.Email = strings.TrimSpace(c.Email)
@@ -102,14 +100,15 @@ func LogoutPOST() http.HandlerFunc {
 	}
 }
 
-// LogoutAllPOST handles POST /api/v1/auth/logout_all — every device, by
-// bumping the epoch every issued cookie was signed against.
+// LogoutAllPOST handles POST /api/v1/auth/logout_all — every device, both
+// credential kinds. RevokeAllSessions bumps the epoch every issued cookie was
+// signed against and deletes every outstanding bearer token in one transaction.
 func LogoutAllPOST(database *db.DB) http.HandlerFunc {
 	users := models.NewUserModel(database)
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := middleware.UserID(r)
-		if err := users.BumpSessionEpoch(uid); err != nil {
-			log.Printf("handlers: session epoch bump failed for user %d: %v", uid, err)
+		if err := users.RevokeAllSessions(uid); err != nil {
+			log.Printf("handlers: session revocation failed for user %d: %v", uid, err)
 			jsonError(w, "Something went wrong. Try again.", http.StatusInternalServerError)
 			return
 		}

@@ -30,6 +30,14 @@ validation_failed  rate_limited  unavailable  internal
 
 Any 4xx that is not enumerated is `validation_failed`; anything else is `internal`.
 
+**Request bodies are capped at 1 MiB.** A larger body is a `413` (`validation_failed`);
+a malformed one is a `400` (`validation_failed`). Both are the client's fault and both
+are answered in the envelope.
+
+**Every API response carries `Cache-Control: no-store`.** Responses are per-session
+data, and the back button must not serve the previous user's `/auth/me` on a shared
+machine.
+
 ## Data rules
 
 **A list's `data` is never `null`.** An empty result is `[]`. A strict decoder binding
@@ -71,11 +79,18 @@ Auth ships with the template. There is no scaffolding step and no app without it
 
 **Native — bearer token.** 64-char hex, only its SHA-256 hash is stored.
 
+Both are resolved by the same middleware, so **`auth: true` means the same thing to a
+browser and to a native client**: send `Authorization: Bearer <token>` and every guarded
+endpoint accepts it, not just the three `_token` ones.
+
+`POST /api/v1/auth/logout_all` deletes the caller's bearer tokens as well as bumping the
+session epoch. A native client is signed out by it and must log in again.
+
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/v1/auth/login` | cookie login |
 | POST | `/api/v1/auth/logout` | clear this browser's cookie |
-| POST | `/api/v1/auth/logout_all` | bump the session epoch — retires every cookie on every device |
+| POST | `/api/v1/auth/logout_all` | retire every credential on every device — cookies **and** bearer tokens |
 | GET | `/api/v1/auth/me` | current user (cookie) |
 | POST | `/api/v1/auth/register` | create an account, sets a session |
 | POST | `/api/v1/auth/login_token` | bearer login |
@@ -100,6 +115,9 @@ and is exempt.
 **Rate limiting** is on by default: 5 attempts per 15 minutes per IP, and 20 per account,
 on both login endpoints and on registration.
 
+**`Strict-Transport-Security: max-age=63072000; includeSubDomains`** is sent on every
+response. Browsers ignore it over plain HTTP, so there is no dev/prod branch.
+
 ---
 
 ## The manifest — `src/app/api.json`
@@ -115,7 +133,7 @@ Fields a client depends on:
   "api_version": "1.0.0",
   "models": [
     {
-      "name": "project", "table": "projects",
+      "name": "project", "table": "projects", "owned": true,
       "fields": [
         { "name": "id",         "type": "int",       "nullable": false },
         { "name": "due_at",     "type": "string",    "nullable": true, "format": "datetime-local" },
@@ -127,7 +145,7 @@ Fields a client depends on:
   "endpoints": [
     {
       "method": "GET", "path": "/api/v1/projects",
-      "model": "project", "kind": "list", "auth": false,
+      "model": "project", "kind": "list", "auth": true,
       "summary": "...",                    // custom endpoints only
       "request":  { "shape": "object", "fields": [ ... ] },
       "response": { "shape": "list", "model": "project" }
@@ -152,6 +170,17 @@ that the iOS build picks a control from it:
 
 A `format: datetime-local` field is a `String`, not a `Date` — distinct from a
 `timestamp` field, which is a `Date` and carries seconds and a zone.
+
+**`auth`** — whether the route is wrapped in `RequireAuth`. Everything the scaffolder
+emits is `true`; `gova <cmd> -public` is what produces `false`. A client should send its
+credential on every request regardless — the flag describes the server's requirement, not
+the client's obligation.
+
+**`owned`** — present and `true` on a per-user resource. Every row the API returns for
+that model belongs to the caller, and a row belonging to anyone else answers `404`. The
+`user_id` column that makes this work is **not** in `fields`: like `id` and `created_at`
+it is set by the server, so a client neither sends it nor receives it. A client needs no
+special handling for an owned model beyond knowing that its lists are already scoped.
 
 **`references`** — names the parent model of a foreign key. A model with a `references`
 field is a **child**: it gets no top-level screen, and its list renders inside the

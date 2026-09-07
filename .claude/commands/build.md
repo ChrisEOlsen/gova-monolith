@@ -66,8 +66,15 @@ if it is not connected.
 ## 5b. Stripe webhook (only if SEED.md checks Payments)
 
 The webhook is an ordinary endpoint at `/api/v1/stripe_webhook`, created with
-`./gova handler` in step 5. It needs no CSRF exemption: it arrives with no
-cookies, which `middleware.CSRF` already lets through.
+`./gova handler -public` in step 5. `-public` is required and is one of the few
+places it is: Stripe holds no session, so the default `auth: true` would answer
+its POST with a 401. What authenticates the request instead is the
+`STRIPE_WEBHOOK_SECRET` signature, which the handler must verify before doing
+anything with the body — a public endpoint that skips that check is an endpoint
+anyone can post fake payment events to.
+
+It needs no CSRF exemption: it arrives with no cookies, which `middleware.CSRF`
+already lets through.
 
 1. Read `APP_URL` from `.env`. If empty, STOP and ask for the production domain.
 2. Register the webhook via the Stripe MCP at `${APP_URL}/api/v1/stripe_webhook`.

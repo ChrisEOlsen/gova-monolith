@@ -42,23 +42,41 @@ var {{.Name}}AllowedColumns = []string{"id", {{range .Fields}}"{{.Name}}", {{end
 // GetPage returns one window of rows plus the total of the filtered set.
 // Handlers clamp limit and offset. An unknown sort/filter column yields
 // ErrInvalidQuery, which handlers map to 422.
-func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.PascalName}}, int, error) {
+{{- if .Owned}}
+//
+// userID scopes the whole query. It is not one of the caller's options: the
+// {{ownerColumn}} predicate is written before opts is consulted, so a filter
+// cannot widen it and an empty opts cannot omit it.
+{{- end}}
+func (m *{{.PascalName}}Model) GetPage({{if .Owned}}userID int64, {{end}}limit, offset int, opts QueryOpts) ([]{{.PascalName}}, int, error) {
 	orderBy, err := orderByClause(opts.Sort, {{.Name}}AllowedColumns)
 	if err != nil {
 		return nil, 0, err
 	}
+{{- if .Owned}}
+	where := " WHERE {{ownerColumn}} = ?"
+	args := []any{userID}
+{{- else}}
 	where := ""
 	args := []any{}
+{{- end}}
 	if opts.FilterField != "" {
 		col, ferr := filterField(opts.FilterField, {{.Name}}AllowedColumns)
 		if ferr != nil {
 			return nil, 0, ferr
 		}
+{{- if .Owned}}
+		where += " AND " + col + " = ?"
+{{- else}}
 		where = " WHERE " + col + " = ?"
+{{- end}}
 		args = append(args, opts.FilterValue)
 	}
 
-	cacheKey := fmt.Sprintf("{{.PluralName}}:page:%d:%d:%s:%s:%s", limit, offset, opts.Sort, opts.FilterField, opts.FilterValue)
+{{if .Owned}}	// The owner is part of the cache key. Without it the first user to load a
+	// page would fill the cache with their rows and the next user would be
+	// served them — the scoping in the SQL above would never run.
+{{end}}	cacheKey := fmt.Sprintf("{{.PluralName}}:page:{{if .Owned}}%d:{{end}}%d:%d:%s:%s:%s", {{if .Owned}}userID, {{end}}limit, offset, opts.Sort, opts.FilterField, opts.FilterValue)
 	if hit, ok := m.cache.Get(cacheKey); ok {
 		var page {{.Name}}Page
 		if err := json.Unmarshal(hit, &page); err == nil {
@@ -98,8 +116,12 @@ func (m *{{.PascalName}}Model) GetPage(limit, offset int, opts QueryOpts) ([]{{.
 	return items, total, nil
 }
 
-func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
-	row := m.db.Read.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?", id)
+{{if .Owned}}// Find returns the row only if userID owns it. A row belonging to somebody
+// else is indistinguishable from a row that does not exist — handlers turn the
+// sql.ErrNoRows into a 404, never a 403, so the API does not confirm that an id
+// is real to a caller with no right to it.
+{{end}}func (m *{{.PascalName}}Model) Find(id{{if .Owned}}, userID{{end}} int64) (*{{.PascalName}}, error) {
+	row := m.db.Read.QueryRow("SELECT id, {{joinNames .Fields}}, created_at FROM {{.PluralName}} WHERE id = ?{{if .Owned}} AND {{ownerColumn}} = ?{{end}}", id{{if .Owned}}, userID{{end}})
 	var item {{.PascalName}}
 {{scanDecls .Fields "\t"}}	if err := row.Scan(&item.ID, {{scanTargets .Fields "&item."}}, &item.CreatedAt); err != nil {
 		return nil, err
@@ -107,12 +129,15 @@ func (m *{{.PascalName}}Model) Find(id int64) (*{{.PascalName}}, error) {
 {{scanAssigns .Fields "item." "\t"}}	return &item, nil
 }
 
-func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
+{{if .Owned}}// Create stamps the row with its owner. userID comes from the session, never
+// from the request body — {{ownerColumn}} is not a field of {{.Name}}Request,
+// so a client cannot file a row under another account.
+{{end}}func (m *{{.PascalName}}Model) Create({{if .Owned}}userID int64, {{end}}{{createParams .Fields}}) (int64, error) {
 	// A nil pointer binds to SQL NULL directly — no sql.Null* wrapper needed
 	// on the insert path.
 	res, err := m.db.Write.Exec(
-		"INSERT INTO {{.PluralName}} ({{joinNames .Fields}}) VALUES ({{placeholders .Fields}})",
-		{{joinNames .Fields}},
+		"INSERT INTO {{.PluralName}} ({{if .Owned}}{{ownerColumn}}, {{end}}{{joinNames .Fields}}) VALUES ({{if .Owned}}?, {{end}}{{placeholders .Fields}})",
+		{{if .Owned}}userID, {{end}}{{joinNames .Fields}},
 	)
 	if err != nil {
 		return 0, err
@@ -121,8 +146,8 @@ func (m *{{.PascalName}}Model) Create({{createParams .Fields}}) (int64, error) {
 	return res.LastInsertId()
 }
 
-func (m *{{.PascalName}}Model) Delete(id int64) error {
-	res, err := m.db.Write.Exec("DELETE FROM {{.PluralName}} WHERE id = ?", id)
+func (m *{{.PascalName}}Model) Delete(id{{if .Owned}}, userID{{end}} int64) error {
+	res, err := m.db.Write.Exec("DELETE FROM {{.PluralName}} WHERE id = ?{{if .Owned}} AND {{ownerColumn}} = ?{{end}}", id{{if .Owned}}, userID{{end}})
 	if err != nil {
 		return err
 	}
@@ -137,10 +162,10 @@ func (m *{{.PascalName}}Model) Delete(id int64) error {
 	return nil
 }
 {{if .CRUD}}
-func (m *{{.PascalName}}Model) Update(id int64, {{createParams .Fields}}) error {
+func (m *{{.PascalName}}Model) Update(id{{if .Owned}}, userID{{end}} int64, {{createParams .Fields}}) error {
 	res, err := m.db.Write.Exec(
-		"UPDATE {{.PluralName}} SET {{updateSet .Fields}} WHERE id = ?",
-		{{joinNames .Fields}}, id,
+		"UPDATE {{.PluralName}} SET {{updateSet .Fields}} WHERE id = ?{{if .Owned}} AND {{ownerColumn}} = ?{{end}}",
+		{{joinNames .Fields}}, id{{if .Owned}}, userID{{end}},
 	)
 	if err != nil {
 		return err

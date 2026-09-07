@@ -15,6 +15,14 @@ import (
 // than truncating it, so the boundary validates and answers 400.
 const MaxPasswordBytes = 72
 
+// BcryptCost is the work factor for every password hash in the app, including
+// the dummy hash the unknown-email login path pays. 12 rather than bcrypt's
+// DefaultCost of 10: 10 was chosen when the package was written and hardware
+// has moved on. Exported so handlers/auth.go's timing-equalization hash uses
+// the identical cost — a cheaper dummy would restore the timing oracle it
+// exists to close.
+const BcryptCost = 12
+
 var (
 	ErrDuplicateEmail  = errors.New("an account with that email already exists")
 	ErrPasswordTooLong = errors.New("password must be at most 72 bytes")
@@ -41,7 +49,7 @@ func (m *UserModel) Create(name, email, password string) (int64, error) {
 	if len(password) > MaxPasswordBytes {
 		return 0, ErrPasswordTooLong
 	}
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
 	if err != nil {
 		return 0, err
 	}
@@ -99,13 +107,31 @@ func (m *UserModel) SessionEpoch(userID int64) int64 {
 	return epoch
 }
 
-// BumpSessionEpoch invalidates every session issued before now, on every device.
-// Called on "log out everywhere" and should be called on password change.
-func (m *UserModel) BumpSessionEpoch(userID int64) error {
-	_, err := m.db.Write.Exec(
+// RevokeAllSessions retires every credential a user holds, on every device:
+// the epoch bump kills all outstanding session cookies, and the delete kills
+// all outstanding bearer tokens.
+//
+// One transaction, one method, because "log out everywhere" is one promise. The
+// epoch bump alone used to be the whole implementation, which left native
+// clients signed in — an operator containing a compromised account had no way
+// to retire the token on the attacker's device. Anything that revokes sessions
+// calls this; nothing bumps the epoch on its own.
+func (m *UserModel) RevokeAllSessions(userID int64) error {
+	tx, err := m.db.Write.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
 		"UPDATE users SET session_epoch = session_epoch + 1 WHERE id = ?", userID,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM mobile_tokens WHERE user_id = ?", userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ─── rate limiting ───────────────────────────────────────────────────────────

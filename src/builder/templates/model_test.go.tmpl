@@ -11,17 +11,50 @@ import (
 	"gova/app/db"
 )
 
+// {{.Name}}TestSchema is the fixture table. One definition rather than one per
+// test, so the shape cannot drift between them.
+const {{.Name}}TestSchema = `CREATE TABLE {{.PluralName}} (
+	id INTEGER PRIMARY KEY,
+{{- if .Owned}}
+	{{ownerColumn}} INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+{{- end}}
+	{{- range .Fields}}
+	{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
+	{{- end}}
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`
+{{if .Owned}}
+// seed{{.PascalName}}Owners inserts two users and returns their ids. Every test
+// of an owned model needs the second one: what the scoping is worth is entirely
+// a question of what the other user cannot reach.
+//
+// Rows go in directly rather than through UserModel.Create — these are fixtures,
+// not credentials, and bcrypt at the real cost would dominate the test's runtime.
+func seed{{.PascalName}}Owners(t *testing.T, testDB *db.DB) (owner, other int64) {
+	t.Helper()
+	insert := func(name, email string) int64 {
+		res, err := testDB.Write.Exec(
+			"INSERT INTO users (name, email, password_hash) VALUES (?, ?, 'not-a-real-hash')", name, email)
+		if err != nil {
+			t.Fatalf("seed user %s: %v", email, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("seed user %s: %v", email, err)
+		}
+		return id
+	}
+	return insert("Owner", "owner@example.com"), insert("Other", "other@example.com")
+}
+{{end}}
 func Test{{.PascalName}}Model_CRUD(t *testing.T) {
-	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
-		id INTEGER PRIMARY KEY,
-		{{- range .Fields}}
-		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
-		{{- end}}
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
+	testDB := db.OpenTest(t, {{.Name}}TestSchema)
 	m := New{{.PascalName}}Model(testDB, cache.New())
+{{- if .Owned}}
+	owner, _ := seed{{.PascalName}}Owners(t, testDB)
+{{- end}}
 
-{{testDecls .Fields "\t" ""}}	id, err := m.Create({{testArgs .Fields ""}})
+{{testDecls .Fields "\t" ""}}	id, err := m.Create({{if .Owned}}owner, {{end}}{{testArgs .Fields ""}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -29,7 +62,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Fatal("Create returned id 0")
 	}
 
-	found, err := m.Find(id)
+	found, err := m.Find(id{{if .Owned}}, owner{{end}})
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -37,7 +70,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Errorf("Find: got ID %d, want %d", found.ID, id)
 	}
 
-	items, total, err := m.GetPage(50, 0, QueryOpts{})
+	items, total, err := m.GetPage({{if .Owned}}owner, {{end}}50, 0, QueryOpts{})
 	if err != nil {
 		t.Fatalf("GetPage: %v", err)
 	}
@@ -59,7 +92,7 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 {{end}}{{end}}
 	// An offset past the end returns an empty (non-nil) slice, not an error,
 	// and the total still reflects the full table.
-	page2, total2, err := m.GetPage(50, 50, QueryOpts{})
+	page2, total2, err := m.GetPage({{if .Owned}}owner, {{end}}50, 50, QueryOpts{})
 	if err != nil {
 		t.Fatalf("GetPage(offset 50): %v", err)
 	}
@@ -73,53 +106,91 @@ func Test{{.PascalName}}Model_CRUD(t *testing.T) {
 		t.Errorf("GetPage(offset 50): got total %d, want 1", total2)
 	}
 
-	if err := m.Delete(id); err != nil {
+	if err := m.Delete(id{{if .Owned}}, owner{{end}}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := m.Find(id); err == nil {
+	if _, err := m.Find(id{{if .Owned}}, owner{{end}}); err == nil {
 		t.Error("Find after Delete: expected error, got nil")
 	}
 	// Deleting a row that is not there is a miss, not a silent success.
-	if err := m.Delete(id); err != sql.ErrNoRows {
+	if err := m.Delete(id{{if .Owned}}, owner{{end}}); err != sql.ErrNoRows {
 		t.Errorf("Delete(missing): got %v, want sql.ErrNoRows", err)
 	}
 }
+{{if .Owned}}
+// Test{{.PascalName}}Model_OwnerIsolation is the assertion the -owner flag
+// exists for. Every method must behave, for a non-owner, exactly as it would
+// if the row had never been written — a miss, not an error that distinguishes
+// "not yours" from "not there".
+func Test{{.PascalName}}Model_OwnerIsolation(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}TestSchema)
+	m := New{{.PascalName}}Model(testDB, cache.New())
+	owner, other := seed{{.PascalName}}Owners(t, testDB)
 
+{{testDecls .Fields "\t" ""}}	id, err := m.Create(owner, {{testArgs .Fields ""}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := m.Find(id, other); err != sql.ErrNoRows {
+		t.Errorf("Find as non-owner: got %v, want sql.ErrNoRows", err)
+	}
+
+	// Read through the list too, and read it first as the owner: a cache keyed
+	// without the owner would serve the owner's page straight back here.
+	if _, total, err := m.GetPage(owner, 50, 0, QueryOpts{}); err != nil || total != 1 {
+		t.Fatalf("GetPage as owner: total %d, err %v; want 1, nil", total, err)
+	}
+	items, total, err := m.GetPage(other, 50, 0, QueryOpts{})
+	if err != nil {
+		t.Fatalf("GetPage as non-owner: %v", err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Errorf("GetPage as non-owner: got %d items (total %d), want 0", len(items), total)
+	}
+{{if .CRUD}}
+	if err := m.Update(id, other, {{testArgs .Fields ""}}); err != sql.ErrNoRows {
+		t.Errorf("Update as non-owner: got %v, want sql.ErrNoRows", err)
+	}
+{{end}}
+	if err := m.Delete(id, other); err != sql.ErrNoRows {
+		t.Errorf("Delete as non-owner: got %v, want sql.ErrNoRows", err)
+	}
+	// ...and the row is still there afterwards.
+	if _, err := m.Find(id, owner); err != nil {
+		t.Errorf("owner's row did not survive a non-owner's Delete: %v", err)
+	}
+}
+{{end}}
 {{if .CRUD}}
 func Test{{.PascalName}}Model_Update(t *testing.T) {
-	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
-		id INTEGER PRIMARY KEY,
-		{{- range .Fields}}
-		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
-		{{- end}}
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
+	testDB := db.OpenTest(t, {{.Name}}TestSchema)
 	m := New{{.PascalName}}Model(testDB, cache.New())
+{{- if .Owned}}
+	owner, _ := seed{{.PascalName}}Owners(t, testDB)
+{{- end}}
 
-{{testDecls .Fields "\t" ""}}	id, err := m.Create({{testArgs .Fields ""}})
+{{testDecls .Fields "\t" ""}}	id, err := m.Create({{if .Owned}}owner, {{end}}{{testArgs .Fields ""}})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// Update the existing row — should succeed.
-	if err := m.Update(id, {{testArgs .Fields ""}}); err != nil {
+	if err := m.Update(id{{if .Owned}}, owner{{end}}, {{testArgs .Fields ""}}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	// Update a missing row — should report sql.ErrNoRows.
-	if err := m.Update(999999, {{testArgs .Fields ""}}); err != sql.ErrNoRows {
+	if err := m.Update(999999{{if .Owned}}, owner{{end}}, {{testArgs .Fields ""}}); err != sql.ErrNoRows {
 		t.Errorf("Update(missing): got %v, want sql.ErrNoRows", err)
 	}
 }
 
 func Test{{.PascalName}}Model_GetPageRejectsBadSort(t *testing.T) {
-	testDB := db.OpenTest(t, `CREATE TABLE {{.PluralName}} (
-		id INTEGER PRIMARY KEY,
-		{{- range .Fields}}
-		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
-		{{- end}}
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	)`)
+	testDB := db.OpenTest(t, {{.Name}}TestSchema)
 	m := New{{.PascalName}}Model(testDB, cache.New())
-	if _, _, err := m.GetPage(50, 0, QueryOpts{Sort: "bogus_column"}); err != ErrInvalidQuery {
+{{- if .Owned}}
+	owner, _ := seed{{.PascalName}}Owners(t, testDB)
+{{- end}}
+	if _, _, err := m.GetPage({{if .Owned}}owner, {{end}}50, 0, QueryOpts{Sort: "bogus_column"}); err != ErrInvalidQuery {
 		t.Errorf("GetPage bad sort: got %v, want ErrInvalidQuery", err)
 	}
 }

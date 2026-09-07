@@ -17,6 +17,6 @@ func RegisterGenerated(r chi.Router, database *db.DB, appCache *cache.Cache) {
 	r.With(middleware.RequireAuth).Post("/api/v1/auth/logout_all", LogoutAllPOST(database))
 	r.Delete("/api/v1/auth/logout_token", MobileLogoutDELETE(database))
 	r.With(middleware.RequireAuth).Get("/api/v1/auth/me", MeGET(database))
-	r.Get("/api/v1/auth/me_token", MobileMeGET(database))
+	r.With(middleware.RequireAuth).Get("/api/v1/auth/me_token", MobileMeGET(database))
 	r.Post("/api/v1/auth/register", RegisterPOST(database))
 }

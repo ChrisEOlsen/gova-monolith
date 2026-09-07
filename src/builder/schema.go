@@ -67,6 +67,17 @@ type column struct {
 	NotNull bool
 }
 
+// implicitColumns are the columns generated code writes and reads on its own.
+// Declaring one in -fields would put it in the request body and the update SET
+// clause — letting a client set its own row's created_at, or, for user_id,
+// hand its row to somebody else. Rejected rather than silently dropped, so the
+// author finds out the declaration did nothing.
+var implicitColumns = map[string]bool{
+	"id":         true,
+	"created_at": true,
+	OwnerColumn:  true,
+}
+
 // tableColumnsAt reads a table's shape from SQLite's schema.
 //
 // PRAGMA does not accept bound parameters, so the table name is interpolated.
@@ -147,6 +158,86 @@ func acceptedSQLTypes(fieldType string) []string {
 	}
 }
 
+// OwnerColumn is the foreign key an owned model scopes every query by. Fixed
+// rather than configurable: the whole value of the ownership option is that one
+// name means one thing in every generated file, and the session user is the
+// only principal the template has.
+const OwnerColumn = "user_id"
+
+// requireOwnerColumn checks the column an owned resource is scoped by. It must
+// be a NOT NULL INTEGER foreign key into users — nullable would mean a row with
+// no owner, which every generated WHERE clause would then hide from everyone
+// while leaving it in the table, and a missing reference would let the row
+// outlive the account it belongs to.
+func requireOwnerColumnAt(dsn, table string, cols []column) error {
+	owner, ok := columnByName(cols, OwnerColumn)
+	if !ok {
+		return fmt.Errorf("table %q has no %q column, which -owner requires — declare it as "+
+			"`%s INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE`", table, OwnerColumn, OwnerColumn)
+	}
+	if owner.SQLType != "INTEGER" {
+		return fmt.Errorf("table %q column %q is %s but an owner key is scanned as an int64 — "+
+			"declare it as `%s INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE`",
+			table, OwnerColumn, owner.SQLType, OwnerColumn)
+	}
+	if !owner.NotNull {
+		return fmt.Errorf("table %q column %q is nullable — an unowned row would be invisible to every "+
+			"user while still occupying the table; declare it `NOT NULL`", table, OwnerColumn)
+	}
+	refs, err := foreignKeyTargetsAt(dsn, table)
+	if err != nil {
+		return err
+	}
+	if refs[OwnerColumn] != "users" {
+		return fmt.Errorf("table %q column %q does not reference users(id) — without the foreign key "+
+			"a row outlives the account that owns it; declare it as "+
+			"`%s INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE`", table, OwnerColumn, OwnerColumn)
+	}
+	return nil
+}
+
+// foreignKeyTargetsAt maps each foreign-key column of a table to the table it
+// references.
+func foreignKeyTargetsAt(dsn, table string) (map[string]string, error) {
+	if !isSafeIdent(table) {
+		return nil, fmt.Errorf("unsafe table name %q", table)
+	}
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query("PRAGMA foreign_key_list(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var (
+			id, seq                   int
+			refTable, from, to        string
+			onUpdate, onDelete, match string
+		)
+		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return nil, err
+		}
+		out[from] = refTable
+	}
+	return out, rows.Err()
+}
+
+func columnByName(cols []column, name string) (column, bool) {
+	for _, c := range cols {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return column{}, false
+}
+
 // requireImplicitColumns checks the two columns every generated model uses
 // without the caller declaring them: model.go.tmpl hard-codes `id` and
 // `created_at` in the struct, the sort whitelist and the SELECT, and lists
@@ -187,7 +278,7 @@ func requireImplicitColumns(table string, cols []column) error {
 // The fields argument stays a declaration of intent; the table is the source
 // of truth. A mismatch fails the tool with a diff rather than silently
 // generating a model that lies about the data.
-func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
+func applySchemaAt(dsn, table string, fields []Field, owned bool) ([]Field, error) {
 	cols, err := tableColumnsAt(dsn, table)
 	if err != nil {
 		return nil, err
@@ -198,6 +289,11 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 
 	if err := requireImplicitColumns(table, cols); err != nil {
 		return nil, err
+	}
+	if owned {
+		if err := requireOwnerColumnAt(dsn, table, cols); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := validateFieldTypes(fields); err != nil {
@@ -216,6 +312,10 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 
 	out := make([]Field, 0, len(fields))
 	for _, f := range fields {
+		if implicitColumns[f.Name] {
+			return nil, fmt.Errorf("field %q is an implicit column — every generated model handles it "+
+				"already; drop it from -fields", f.Name)
+		}
 		c, ok := byName[f.Name]
 		if !ok {
 			return nil, fmt.Errorf("field %q is not a column of table %q (columns: %s)",
@@ -233,6 +333,6 @@ func applySchemaAt(dsn, table string, fields []Field) ([]Field, error) {
 }
 
 // applySchema is the production entry point, against the live app database.
-func applySchema(table string, fields []Field) ([]Field, error) {
-	return applySchemaAt(dataDSN, table, fields)
+func applySchema(table string, fields []Field, owned bool) ([]Field, error) {
+	return applySchemaAt(dataDSN, table, fields, owned)
 }

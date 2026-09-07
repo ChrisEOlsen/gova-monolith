@@ -143,15 +143,15 @@ func TestValidatePagePath(t *testing.T) {
 // even a resource named "login" lands somewhere else.
 func TestListPage_PluralNamespaceCannotCollideWithAuthPages(t *testing.T) {
 	for _, name := range []string{"login", "register"} {
-		p := listPage(name, "T")
+		p := listPage(name, "T", true)
 		if p.Path == "/login" || p.Path == "/register" {
 			t.Errorf("resource %q collides with an auth page at %s", name, p.Path)
 		}
 	}
-	if got := listPage("project", "Projects").Path; got != "/projects" {
+	if got := listPage("project", "Projects", true).Path; got != "/projects" {
 		t.Errorf("listPage path: got %q, want /projects", got)
 	}
-	if got := listPage("project", "Projects").File; got != "projects" {
+	if got := listPage("project", "Projects", true).File; got != "projects" {
 		t.Errorf("listPage file: got %q, want projects", got)
 	}
 }
@@ -281,7 +281,7 @@ func TestFieldsToModel_AddsIDAndCreatedAt(t *testing.T) {
 		{Name: "name", Type: "string", Nullable: false},
 		{Name: "notes", Type: "string", Nullable: true},
 	}
-	m := fieldsToModel("project", "projects", fields)
+	m := fieldsToModel("project", "projects", fields, false)
 	if m.Name != "project" || m.Table != "projects" {
 		t.Fatalf("model identity wrong: %+v", m)
 	}
@@ -310,7 +310,7 @@ func TestFieldsToModel_CarriesFormatAndRef(t *testing.T) {
 		{Name: "remind_at", Type: "string", Format: "datetime-local"},
 		{Name: "category_id", Type: "int", Ref: "log_category"},
 	}
-	m := fieldsToModel("reminder", "reminders", fields)
+	m := fieldsToModel("reminder", "reminders", fields, false)
 	// id, remind_at, category_id, created_at
 	if m.Fields[1].Format != "datetime-local" {
 		t.Errorf("format not carried: %q", m.Fields[1].Format)
@@ -414,7 +414,7 @@ func TestWriteThenRead_RoundTrips(t *testing.T) {
 }
 
 func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
-	eps := resourceEndpoints(sampleModel())
+	eps := resourceEndpoints(sampleModel(), true)
 	if len(eps) != 5 {
 		t.Fatalf("got %d endpoints, want 5", len(eps))
 	}
@@ -435,8 +435,8 @@ func TestResourceEndpoints_FiveWithKinds(t *testing.T) {
 		if e.Kind != wantKind {
 			t.Errorf("%s: kind got %q want %q", key, e.Kind, wantKind)
 		}
-		if e.Auth {
-			t.Errorf("%s: should be public (auth:false)", key)
+		if !e.Auth {
+			t.Errorf("%s: auth flag was not carried onto the endpoint", key)
 		}
 		if e.Model != "project" {
 			t.Errorf("%s: model got %q want project", key, e.Model)
@@ -463,8 +463,8 @@ func TestResourceEndpoints_Schemas(t *testing.T) {
 	m := fieldsToModel("reminder", "reminders", []Field{
 		{Name: "title", Type: "string"},
 		{Name: "remind_at", Type: "string", Format: "datetime-local"},
-	})
-	eps := resourceEndpoints(m)
+	}, false)
+	eps := resourceEndpoints(m, true)
 	byKind := map[string]Endpoint{}
 	for _, e := range eps {
 		byKind[e.Kind] = e
@@ -522,7 +522,7 @@ func TestCommittedManifest_CarriesTheAuthContract(t *testing.T) {
 		"POST /api/v1/auth/register":       {"RegisterPOST", "register", false},
 		"POST /api/v1/auth/login_token":    {"MobileLoginPOST", "mobile_login", false},
 		"DELETE /api/v1/auth/logout_token": {"MobileLogoutDELETE", "mobile_logout", false},
-		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", false},
+		"GET /api/v1/auth/me_token":        {"MobileMeGET", "mobile_me", true},
 	}
 
 	got := map[string]Endpoint{}
@@ -546,9 +546,16 @@ func TestCommittedManifest_CarriesTheAuthContract(t *testing.T) {
 		}
 	}
 
-	// The bearer endpoints self-enforce their token; a cookie RequireAuth wrap
-	// would 401 them before the handler ever ran.
-	for _, key := range []string{"POST /api/v1/auth/login_token", "GET /api/v1/auth/me_token"} {
+	// login_token is the request that obtains a credential and so cannot carry
+	// one; logout_token answers 200 for any well-formed request on purpose, so
+	// that a client holding an already-dead token still completes its logout.
+	// Both must stay unwrapped.
+	//
+	// me_token is wrapped, and that is only correct because middleware.Auth
+	// resolves bearer tokens as well as cookies. RequireAuth used to be a
+	// cookie-only gate, which would have 401'd this route before the handler
+	// ever ran.
+	for _, key := range []string{"POST /api/v1/auth/login_token", "DELETE /api/v1/auth/logout_token"} {
 		if got[key].Auth {
 			t.Errorf("%s must not be wrapped in RequireAuth", key)
 		}

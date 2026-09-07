@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gova/app/db"
+	"gova/app/middleware"
 	"gova/app/models"
 )
 
@@ -56,7 +57,7 @@ func TestMobileLoginPOST_IssuesToken(t *testing.T) {
 	if count != 0 {
 		t.Error("the raw token was stored instead of its hash")
 	}
-	database.Read.QueryRow("SELECT COUNT(*) FROM mobile_tokens WHERE token_hash = ?", hashToken(token)).Scan(&count)
+	database.Read.QueryRow("SELECT COUNT(*) FROM mobile_tokens WHERE token_hash = ?", models.HashToken(token)).Scan(&count)
 	if count != 1 {
 		t.Error("no hashed token row was written")
 	}
@@ -75,12 +76,25 @@ func TestMobileLoginPOST_WrongPasswordIssuesNothing(t *testing.T) {
 	}
 }
 
+// mobileMe runs a request through the real middleware.Auth stack before
+// reaching MobileMeGET. The bearer token is resolved by the middleware now, the
+// same place the session cookie is, so calling the handler bare would test a
+// request no client ever sends.
+func mobileMe(database *db.DB, req *http.Request) *httptest.ResponseRecorder {
+	h := middleware.Auth(
+		models.NewUserModel(database),
+		models.NewMobileTokenModel(database),
+	)(MobileMeGET(database))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestMobileMeGET_ValidatesBearerToken(t *testing.T) {
 	database, _, _ := authFixture(t)
 	token := tokenFrom(t, postLoginToken(database, testEmail, testPassword))
 
-	rec := httptest.NewRecorder()
-	MobileMeGET(database)(rec, withBearer(http.MethodGet, "/api/v1/auth/me_token", token))
+	rec := mobileMe(database, withBearer(http.MethodGet, "/api/v1/auth/me_token", token))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d body %s", rec.Code, rec.Body.String())
 	}
@@ -98,7 +112,6 @@ func TestMobileMeGET_ValidatesBearerToken(t *testing.T) {
 
 func TestMobileMeGET_RejectsBadTokens(t *testing.T) {
 	database, _, _ := authFixture(t)
-	h := MobileMeGET(database)
 
 	cases := map[string]*http.Request{
 		"no header":     httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil),
@@ -106,9 +119,7 @@ func TestMobileMeGET_RejectsBadTokens(t *testing.T) {
 		"unknown token": withBearer(http.MethodGet, "/api/v1/auth/me_token", "deadbeef"),
 	}
 	for name, req := range cases {
-		rec := httptest.NewRecorder()
-		h(rec, req)
-		if rec.Code != http.StatusUnauthorized {
+		if rec := mobileMe(database, req); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s: want 401, got %d", name, rec.Code)
 		}
 	}
@@ -117,9 +128,7 @@ func TestMobileMeGET_RejectsBadTokens(t *testing.T) {
 	token := tokenFrom(t, postLoginToken(database, testEmail, testPassword))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me_token", nil)
 	req.Header.Set("Authorization", "Basic "+token)
-	rec := httptest.NewRecorder()
-	h(rec, req)
-	if rec.Code != http.StatusUnauthorized {
+	if rec := mobileMe(database, req); rec.Code != http.StatusUnauthorized {
 		t.Errorf("non-Bearer scheme: want 401, got %d", rec.Code)
 	}
 }
@@ -127,12 +136,11 @@ func TestMobileMeGET_RejectsBadTokens(t *testing.T) {
 func TestMobileMeGET_RejectsExpiredToken(t *testing.T) {
 	database, _, id := authFixture(t)
 	tokens := models.NewMobileTokenModel(database)
-	if err := tokens.Issue(hashToken("stale-token"), id, time.Now().Add(-time.Minute)); err != nil {
+	if err := tokens.Issue(models.HashToken("stale-token"), id, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	MobileMeGET(database)(rec, withBearer(http.MethodGet, "/api/v1/auth/me_token", "stale-token"))
+	rec := mobileMe(database, withBearer(http.MethodGet, "/api/v1/auth/me_token", "stale-token"))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expired token: want 401, got %d", rec.Code)
 	}

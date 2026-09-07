@@ -1,5 +1,10 @@
 package main
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // onDiskFiles is a snapshot of the generated-file names found in each of the
 // four directories the builder scaffolds into.
 type onDiskFiles struct {
@@ -50,8 +55,47 @@ func buildInspection(m Manifest, onDisk onDiskFiles) inspection {
 	if m.BuilderVersion != "" && m.BuilderVersion != builderVersion {
 		div = append(div, "api.json was written by builder "+m.BuilderVersion+
 			" but the running builder is "+builderVersion+
-			" — if src/builder was just synced, rebuild the image: docker compose up -d --build mcp")
+			" — if src/builder was just synced, rebuild the image and re-stamp the manifest: "+
+			"docker compose up -d --build builder && ./gova regen")
 	}
 
 	return inspection{Manifest: m, OnDisk: onDisk, BuilderVersion: builderVersion, Divergence: div}
+}
+
+// generatedDivergence reports generated files that no longer match what
+// api.json would produce.
+//
+// This is the check that catches a hand edit which has not been applied. The
+// documented way to protect an existing route is to set auth:true in api.json,
+// but the *_gen.go files are only rewritten as a side effect of a scaffold — so
+// until something else ran, the manifest claimed a guard the router had never
+// mounted, and nothing said so. Re-rendering from the manifest and diffing is
+// the only honest way to know: the files are deterministic output of exactly
+// this input.
+func generatedDivergence(handlersDir string, m Manifest) []string {
+	div := []string{}
+	for _, f := range []struct {
+		name   string
+		render func(Manifest) (string, error)
+	}{
+		{"routes_gen.go", renderRoutes},
+		{"pages_gen.go", renderPages},
+		{"pages_gen_test.go", renderPagesTest},
+	} {
+		want, err := f.render(m)
+		if err != nil {
+			div = append(div, "could not re-render "+f.name+" from api.json: "+err.Error())
+			continue
+		}
+		got, err := os.ReadFile(filepath.Join(handlersDir, f.name))
+		if err != nil {
+			div = append(div, "api.json is present but handlers/"+f.name+" is missing — run `gova regen`")
+			continue
+		}
+		if string(got) != want {
+			div = append(div, "handlers/"+f.name+" does not match api.json — an edit to the manifest has "+
+				"not been applied and the running router does not reflect it; run `gova regen`")
+		}
+	}
+	return div
 }

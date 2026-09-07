@@ -12,7 +12,7 @@ import (
 // that moment; `gova inspect` compares this against the running binary, which
 // catches the common case of syncing src/builder without rebuilding the image.
 // Bump it whenever anything under src/builder changes.
-const builderVersion = "2026-09-03.1"
+const builderVersion = "2026-09-06.1"
 
 const usage = `gova — the GOVA application builder.
 
@@ -29,7 +29,18 @@ Commands:
   handler     Generate one custom JSON endpoint under /api/v1/ and register it.
   resource    Generate a full CRUD resource: model, five handlers, and a page
               with a create form and delete buttons.
+  regen       Re-render routes_gen.go and pages_gen.go from api.json. Run this
+              after editing api.json by hand — nothing else picks up the change.
   version     Print the builder version.
+
+Access control:
+  Everything generated requires a signed-in caller. Pass -public to open a
+  route to anonymous callers — nothing downstream checks again, so say it only
+  where you mean it.
+
+  -owner (model, resource) scopes every generated query to the session user.
+  The table must carry a user_id INTEGER NOT NULL REFERENCES users(id) ON
+  DELETE CASCADE column; another user's row answers 404, never 403.
 
 Field syntax (model, resource):
   Comma-separated name:type pairs — "title:string,quantity:int,due_at:datetime"
@@ -75,44 +86,50 @@ func run(command string, args []string) (string, error) {
 		fs := flag.NewFlagSet("model", flag.ContinueOnError)
 		name := fs.String("name", "", "model name, snake_case singular (required)")
 		fields := fs.String("fields", "", "comma-separated name:type list (required)")
+		owner := fs.Bool("owner", false, "scope every query to the session user via the user_id column")
 		if err := fs.Parse(args); err != nil {
 			return "", err
 		}
-		return createModel(*name, splitFields(*fields))
+		return createModel(*name, splitFields(*fields), *owner)
 
 	case "page":
 		fs := flag.NewFlagSet("page", flag.ContinueOnError)
 		file := fs.String("file", "", "filename without extension (required)")
 		title := fs.String("title", "", "page title (required)")
 		path := fs.String("path", "", "human-facing URL, e.g. /dashboard (required)")
-		auth := fs.Bool("auth", false, "redirect signed-out visitors to /login")
+		public := fs.Bool("public", false, "serve the page to signed-out visitors (default: redirect them to /login)")
 		if err := fs.Parse(args); err != nil {
 			return "", err
 		}
-		return createPage(*file, *title, *path, *auth)
+		return createPage(*file, *title, *path, !*public)
 
 	case "handler":
 		fs := flag.NewFlagSet("handler", flag.ContinueOnError)
 		name := fs.String("name", "", "handler name, snake_case (required)")
 		method := fs.String("method", "", "GET, POST, PUT or DELETE (required)")
 		path := fs.String("path", "", "full route path under /api/v1/ (required)")
-		auth := fs.Bool("auth", false, "wrap the route in middleware.RequireAuth")
+		public := fs.Bool("public", false, "answer anonymous callers (default: wrap the route in middleware.RequireAuth)")
 		summary := fs.String("summary", "", "one line describing what this endpoint does")
 		reqSchema := fs.String("request-schema", "", `JSON body schema: {"shape":"object|list|empty","model":"<name>"?,"fields":[...]?}`)
 		respSchema := fs.String("response-schema", "", "JSON body schema for the response data")
 		if err := fs.Parse(args); err != nil {
 			return "", err
 		}
-		return createHandler(*name, *method, *path, *auth, *summary, *reqSchema, *respSchema)
+		return createHandler(*name, *method, *path, !*public, *summary, *reqSchema, *respSchema)
 
 	case "resource":
 		fs := flag.NewFlagSet("resource", flag.ContinueOnError)
 		name := fs.String("name", "", "resource name, snake_case singular (required)")
 		fields := fs.String("fields", "", "comma-separated name:type list (required)")
+		public := fs.Bool("public", false, "answer anonymous callers on all five routes (default: require a signed-in caller)")
+		owner := fs.Bool("owner", false, "scope every query to the session user via the user_id column")
 		if err := fs.Parse(args); err != nil {
 			return "", err
 		}
-		return scaffoldResource(*name, splitFields(*fields))
+		return scaffoldResource(*name, splitFields(*fields), *public, *owner)
+
+	case "regen":
+		return regen()
 
 	case "version":
 		return builderVersion, nil

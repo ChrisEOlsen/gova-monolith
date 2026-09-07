@@ -86,6 +86,7 @@ You MUST create a task for each of these items and complete them in order. Items
 - Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood independently
 - For each model/page, you should be able to answer: what does it do, how do you use it, and what does it depend on?
 - Map each feature to the `gova` command that will build it — `gova resource` for a CRUD resource, `gova model` + `gova page` + `gova handler` for anything else. This becomes the plan's task list. Auth is not a feature to map: it ships with the template.
+- **Decide who each resource belongs to, and say so in the design.** Every generated route requires a signed-in caller, so the questions left are per resource: (a) is it *owned* — would one user seeing another's rows be a bug? If yes it needs a `user_id` column and `-owner`. (b) is anything genuinely *public* — a landing page, a health check? Those take `-public`. Ask the developer when it is not obvious from the seed; getting it wrong is the difference between a private notes app and a shared one.
 
 **Working in existing codebases:**
 

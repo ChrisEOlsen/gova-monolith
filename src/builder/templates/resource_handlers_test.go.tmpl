@@ -1,6 +1,9 @@
 package handlers
 
 import (
+{{- if .Owned}}
+	"context"
+{{- end}}
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,12 +15,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gova/app/cache"
 	"gova/app/db"
+{{- if .Owned}}
+	"gova/app/middleware"
+{{- end}}
 	"gova/app/models"
 )
 
 func {{.Name}}ResourceSchema() string {
 	return `CREATE TABLE {{.PluralName}} (
 		id INTEGER PRIMARY KEY,
+{{- if .Owned}}
+		{{ownerColumn}} INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+{{- end}}
 		{{- range .Fields}}
 		{{.Name}} {{sqlType .Type}}{{sqlNotNull .}},
 		{{- end}}
@@ -35,13 +44,42 @@ func {{.Name}}Router(testDB *db.DB, appCache *cache.Cache) chi.Router {
 	r.Delete("/api/v1/{{.PluralName}}/{id}", {{.PascalName}}DeleteDELETE(testDB, appCache))
 	return r
 }
+{{if .Owned}}
+// seed{{.PascalName}}Users inserts two users and returns their ids. Fixtures go
+// in directly rather than through the auth handlers — bcrypt at the real cost
+// would dominate the runtime of a test about routing.
+func seed{{.PascalName}}Users(t *testing.T, testDB *db.DB) (owner, other int64) {
+	t.Helper()
+	insert := func(name, email string) int64 {
+		res, err := testDB.Write.Exec(
+			"INSERT INTO users (name, email, password_hash) VALUES (?, ?, 'not-a-real-hash')", name, email)
+		if err != nil {
+			t.Fatalf("seed user %s: %v", email, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("seed user %s: %v", email, err)
+		}
+		return id
+	}
+	return insert("Owner", "owner@example.com"), insert("Other", "other@example.com")
+}
 
+// as{{.PascalName}}User frames a request the way middleware.Auth would, since
+// these tests mount the handlers without the middleware stack.
+func as{{.PascalName}}User(r *http.Request, userID int64) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), middleware.UserIDKey, userID))
+}
+{{end}}
 func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 	testDB := db.OpenTest(t, {{.Name}}ResourceSchema())
 	appCache := cache.New()
 	router := {{.Name}}Router(testDB, appCache)
 	model := models.New{{.PascalName}}Model(testDB, appCache)
-{{testDecls .Fields "\t" "models."}}	id, err := model.Create({{testArgs .Fields "models."}})
+{{- if .Owned}}
+	owner, _ := seed{{.PascalName}}Users(t, testDB)
+{{- end}}
+{{testDecls .Fields "\t" "models."}}	id, err := model.Create({{if .Owned}}owner, {{end}}{{testArgs .Fields "models."}})
 	if err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}
@@ -53,6 +91,9 @@ func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 		} else {
 			r = httptest.NewRequest(method, target, strings.NewReader(body))
 		}
+{{- if .Owned}}
+		r = as{{.PascalName}}User(r, owner)
+{{- end}}
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, r)
 		return rec
@@ -73,6 +114,11 @@ func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 	// Create: echoes the full written object (created_at only appears on the object).
 	if rec := do(http.MethodPost, "/api/v1/{{.PluralName}}", `{{testJSON .Fields}}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"created_at"`) {
 		t.Errorf("create: want 200 with echoed object, got %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	// A body that is not JSON is the client's fault, not the server's.
+	if rec := do(http.MethodPost, "/api/v1/{{.PluralName}}", "{"); rec.Code != 400 {
+		t.Errorf("create malformed body: got %d, want 400", rec.Code)
 	}
 
 	// Update: echoes the full written object.
@@ -97,3 +143,58 @@ func Test{{.PascalName}}ResourceCRUD(t *testing.T) {
 	}
 	_ = id
 }
+{{if .Owned}}
+// Test{{.PascalName}}ResourceOwnerIsolation drives the same routes as another
+// signed-in user. Every one of them must answer as though the row does not
+// exist — a 403 would confirm the id, and a 200 would be the bug this whole
+// option exists to prevent.
+func Test{{.PascalName}}ResourceOwnerIsolation(t *testing.T) {
+	testDB := db.OpenTest(t, {{.Name}}ResourceSchema())
+	appCache := cache.New()
+	router := {{.Name}}Router(testDB, appCache)
+	model := models.New{{.PascalName}}Model(testDB, appCache)
+	owner, other := seed{{.PascalName}}Users(t, testDB)
+
+{{testDecls .Fields "\t" "models."}}	id, err := model.Create(owner, {{testArgs .Fields "models."}})
+	if err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	do := func(userID int64, method, target, body string) *httptest.ResponseRecorder {
+		var r *http.Request
+		if body == "" {
+			r = httptest.NewRequest(method, target, nil)
+		} else {
+			r = httptest.NewRequest(method, target, strings.NewReader(body))
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, as{{.PascalName}}User(r, userID))
+		return rec
+	}
+
+	// Warm the list cache as the owner first: a cache key that ignored the
+	// owner would hand the owner's rows to the next caller.
+	if rec := do(owner, http.MethodGet, "/api/v1/{{.PluralName}}", ""); rec.Code != 200 {
+		t.Fatalf("list as owner: got %d", rec.Code)
+	}
+	if rec := do(other, http.MethodGet, "/api/v1/{{.PluralName}}", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"total":0`) {
+		t.Errorf("list as non-owner: want 200 with total 0, got %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	target := "/api/v1/{{.PluralName}}/1"
+	if rec := do(other, http.MethodGet, target, ""); rec.Code != 404 {
+		t.Errorf("detail as non-owner: got %d, want 404", rec.Code)
+	}
+	if rec := do(other, http.MethodPut, target, `{{testJSON .Fields}}`); rec.Code != 404 {
+		t.Errorf("update as non-owner: got %d, want 404", rec.Code)
+	}
+	if rec := do(other, http.MethodDelete, target, ""); rec.Code != 404 {
+		t.Errorf("delete as non-owner: got %d, want 404", rec.Code)
+	}
+
+	// The row is untouched.
+	if _, err := model.Find(id, owner); err != nil {
+		t.Errorf("owner's row did not survive the non-owner's requests: %v", err)
+	}
+}
+{{end}}

@@ -1,7 +1,9 @@
 package models
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -34,6 +36,28 @@ func (m *MobileTokenModel) Issue(tokenHash string, userID int64, expiresAt time.
 func (m *MobileTokenModel) Revoke(tokenHash string) error {
 	_, err := m.db.Write.Exec("DELETE FROM mobile_tokens WHERE token_hash = ?", tokenHash)
 	return err
+}
+
+// HashToken is the at-rest form of a bearer token. The raw token exists only
+// in the response that issues it and in the Authorization header that spends
+// it; a database read never yields anything replayable.
+func HashToken(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
+}
+
+// UserIDForToken resolves a raw bearer token to its user. It satisfies
+// middleware.TokenStore, which is what lets `auth: true` accept a native
+// client. Hashing lives here so the middleware never learns the storage form.
+func (m *MobileTokenModel) UserIDForToken(rawToken string) (int64, bool) {
+	if rawToken == "" {
+		return 0, false
+	}
+	id, err := m.UserID(HashToken(rawToken))
+	if err != nil {
+		return 0, false
+	}
+	return id, true
 }
 
 // UserID returns the user a live token belongs to.

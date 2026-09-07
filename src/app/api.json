@@ -1,8 +1,8 @@
 {
   "api_version": "1.0.0",
-  "hash": "sha256:480fc65eaf5e305c7fec7618f314304fc0877a342cb960ba325c3ab96042694e",
-  "generated_at": "2026-09-04T01:15:54Z",
-  "builder_version": "2026-09-03.1",
+  "hash": "sha256:4262b8887dfaed57aa4cebe975ea79ecf65930fccd251ab5632a5cd7b0ca0af8",
+  "generated_at": "2026-09-07T02:29:23Z",
+  "builder_version": "2026-09-06.1",
   "models": [
     {
       "name": "user",
@@ -184,7 +184,7 @@
       "deps": [
         "db"
       ],
-      "auth": false,
+      "auth": true,
       "kind": "mobile_me",
       "summary": "The user owning the bearer token",
       "response": {

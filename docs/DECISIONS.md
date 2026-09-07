@@ -92,6 +92,14 @@ cookies at all** — a native client, a webhook — has nothing for a forged
 cross-site request to replay, and forcing the scheme on it only breaks it. A
 bearer request is exempt for the same reason.
 
+`isBearerRequest` is the `Authorization: Bearer` header and nothing else.
+`/api/v1/auth/login_token` used to be exempt by *path*, on the grounds that the
+request obtaining a token cannot yet carry one — a security decision pinned to a
+route name, which a rename would have silently moved. It was also unnecessary: a
+native client holds no cookies, so verification never fires for it anyway. What
+the path exemption actually covered was a *browser* posting to `login_token`,
+which should send a token like every other unsafe browser request.
+
 Safe methods are **allowlisted**, not unsafe ones denylisted: the previous
 `POST || PUT || DELETE` check silently did not run on PATCH. Inverted, a method
 nobody thought of is verified by default.
@@ -171,7 +179,102 @@ bare `Time`; generated test literals need the same qualification; and a
 timestamp field in a test body must be RFC3339 or the handler correctly answers
 422 and the test proves nothing.
 
-## 11. The iOS client reads `api.json` off disk
+## 11. Everything generated requires a signed-in caller
+
+`gova resource`, `gova handler` and `gova page` register `auth: true`. Opening a
+route is `-public`, an explicit act that prints back what it did.
+
+This was the other way round, and the default was doing real damage: five CRUD
+routes — `DELETE /{id}` included — answered anyone, and the only thing standing
+between a scaffold and a world-writable table was an author remembering to go
+and change the manifest afterwards. Nothing in the build pipeline asked. The
+argument for public-by-default is that some routes really are public; the
+argument against is that the cost of the two defaults is not symmetric. Forget
+`-public` and a page 303s to `/login` until you notice. Forget `auth: true` and
+strangers can empty the table.
+
+Two things had to change first, or the default would have been unshippable:
+
+- **`middleware.Auth` reads bearer tokens.** It used to read only the session
+  cookie, so `RequireAuth` answered 401 to any native client no matter how valid
+  its token was, and the bearer credential reached exactly three hand-written
+  endpoints. Turning auth on by default would have made every generated route
+  unusable from `gova-ios`. Both credential kinds are now resolved in one place,
+  cookie first, which is what makes `auth: true` mean the same thing to a
+  browser and to an app.
+- **`gova regen` exists.** See § 13.
+
+## 12. Ownership is a scaffolding option, not a convention
+
+`auth: true` proves *somebody* is signed in. It says nothing about whose row
+this is, and generated CRUD had no answer at all: every signed-in user could
+read, edit and delete every other user's rows. Telling authors to hand-write the
+scoping is the same bet as telling them to hand-set `auth: true`, and it loses
+the same way.
+
+`-owner` makes it structural. The table must declare
+`user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE` — checked at
+scaffold time, not at runtime — and then:
+
+- every generated query carries `user_id = ?`, written into the WHERE clause
+  *before* the caller's sort/filter options are consulted, so no query option
+  can widen it;
+- `user_id` is an **implicit column**, like `id` and `created_at`. It is absent
+  from the request struct, from the response JSON and from `models[].fields` in
+  the manifest, so a client has nowhere to put someone else's id;
+- **the owner is part of the cache key.** Without that the first user to load a
+  page fills the cache and the next user is served their rows — the scoping in
+  the SQL would simply never run;
+- another user's row answers **404, never 403**. A 403 confirms the id exists.
+
+`-owner` and `-public` are refused together: an owned resource is scoped to the
+session user, and a public route has no session user to scope to.
+
+Ownership is opt-in rather than the default because plenty of resources are
+genuinely shared — a catalogue, a public changelog — and requiring `user_id` on
+every table would make the golden recipe wrong for all of them. Access control
+has a safe default; data modelling does not.
+
+## 13. `gova regen`, and `gova inspect` noticing
+
+`api.json` is meant to be edited by hand — that is the documented way to change
+an existing route's `auth`. But the `*_gen.go` files were only ever rewritten as
+a *side effect* of a scaffold. Flip `auth: true` on an endpoint and nothing
+happened: the manifest claimed a guard, the router still mounted the route bare,
+and the next unrelated `gova` command would silently apply the change days
+later. `gova inspect` did not look, because it only compared the manifest
+against *filenames* on disk.
+
+`gova regen` re-renders the generated files from the manifest and nothing else.
+`gova inspect` re-renders them in memory and diffs — the files are deterministic
+output of exactly this input, so a mismatch is a pending edit and there is no
+cleverness required to detect one.
+
+## 14. Accepted risks
+
+Named here rather than left implicit, because an accepted risk that nobody wrote
+down is indistinguishable from one nobody saw.
+
+- **The per-account login lockout is a denial-of-service primitive.** 20
+  failures in 15 minutes locks an address, so anyone who knows a user's email
+  can keep them locked out in rolling 15-minute windows. § 4 explains why the
+  bucket exists and why its budget sits well above the per-address one; the
+  alternative — no per-account bucket — hands an attacker unlimited guesses
+  against a known account. The trade is deliberate.
+- **The CSRF token is not bound to the session.** Double-submit compares a
+  cookie against a header, so a subdomain that can write cookies for the parent
+  domain could inject a matching pair. `SameSite=Strict` on both cookies is what
+  actually closes this. An app that adds untrusted subdomains needs to revisit
+  it.
+- **Private ranges are trusted as reverse proxies** (`handlers/clientip.go`),
+  which is what lets the tunnel's sibling container report a real client
+  address. That trust is only safe because the app's port is published on
+  loopback (`APP_BIND`, default `127.0.0.1`): anything that can open a TCP
+  connection to it can also set `CF-Connecting-IP` and mint unlimited
+  rate-limit buckets. Setting `APP_BIND=0.0.0.0` re-opens that to the LAN — do
+  it for a device test, not for a deployment.
+
+## 15. The iOS client reads `api.json` off disk
 
 `gova-ios`'s `/export:mobile` reads the committed
 `$WEB_APP/src/app/api.json` directly — no running server, no MCP. That is why

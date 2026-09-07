@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"sort"
@@ -87,8 +88,38 @@ func normalizeData(data any) any {
 
 func writeJSON(w http.ResponseWriter, status int, env envelope) {
 	w.Header().Set("Content-Type", "application/json")
+	// API responses are per-session data. Without this the back button can
+	// serve a logged-out visitor the previous user's /auth/me out of the
+	// browser's history cache on a shared machine.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(env)
+}
+
+// maxRequestBody caps a JSON request body. Without a cap, one POST feeds the
+// decoder unbounded memory, and SQLite's single writer then serializes the
+// flood behind it. Raise it on the one handler that needs it — an upload — not
+// here.
+const maxRequestBody = 1 << 20 // 1 MiB
+
+// readJSON decodes a capped request body into dst, writing the failure response
+// itself and reporting whether the caller may continue.
+//
+// Every handler that reads a body goes through this. MaxBytesReader is what
+// makes the cap real: it stops the read at the limit rather than trusting a
+// Content-Length the client wrote.
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			jsonError(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func jsonOK(w http.ResponseWriter, data any) {

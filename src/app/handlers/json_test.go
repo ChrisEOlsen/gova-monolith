@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -199,5 +200,55 @@ func TestCodeConstants_PinWireContract(t *testing.T) {
 		if tc.constant != tc.want {
 			t.Errorf("constant got %q, want %q", tc.constant, tc.want)
 		}
+	}
+}
+
+// readJSON is the only path a request body takes into any handler. The cap is
+// what makes a POST a bounded amount of work: without MaxBytesReader a single
+// unbounded body feeds the decoder unbounded memory, and SQLite's single writer
+// then serializes whatever gets past it.
+func TestReadJSON_CapsBodySize(t *testing.T) {
+	decode := func(body string) (int, bool) {
+		var dst map[string]any
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/x", strings.NewReader(body))
+		ok := readJSON(rec, req, &dst)
+		return rec.Code, ok
+	}
+
+	// A body one byte over the limit is refused, and refused as the client's
+	// fault rather than as a server error.
+	oversize := `{"a":"` + strings.Repeat("x", maxRequestBody) + `"}`
+	code, ok := decode(oversize)
+	if ok {
+		t.Error("an oversized body was accepted")
+	}
+	if code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized body: got %d, want 413", code)
+	}
+
+	if code, ok := decode("{"); ok || code != http.StatusBadRequest {
+		t.Errorf("malformed body: got %d (ok=%v), want 400", code, ok)
+	}
+
+	if code, ok := decode(`{"a":1}`); !ok || code != http.StatusOK {
+		t.Errorf("well-formed body: got %d (ok=%v), want accepted", code, ok)
+	}
+}
+
+// Every API response is per-session data. Without no-store, the back button can
+// serve a signed-out visitor the previous user's /auth/me from the browser's
+// history cache.
+func TestWriteJSON_IsNotCacheable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	jsonOK(rec, map[string]string{"hello": "world"})
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+
+	rec2 := httptest.NewRecorder()
+	jsonError(rec2, "nope", http.StatusNotFound)
+	if got := rec2.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("error response Cache-Control = %q, want no-store", got)
 	}
 }

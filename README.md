@@ -59,6 +59,13 @@ Run `./gova help` for details.
 | `gova handler` | one custom API endpoint |
 | `gova page` | a web page (HTML + JS) |
 | `gova resource` | the whole thing: data, API, page, form, tests |
+| `gova regen` | re-apply `api.json` after you edit it by hand |
+
+Everything generated requires a signed-in caller. Pass `-public` to open a route
+to anonymous visitors, and `-owner` to scope a resource to the user who created
+each row — the table needs a
+`user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE` column, and
+another user's row answers 404.
 
 ## How it fits together
 
@@ -71,6 +78,23 @@ SQLite file underneath. No Redis, no Nginx, no frontend build step.
 
 **Plain everything.** Go returns JSON. Vanilla ES modules render the page.
 Tailwind does the styling. No framework, no bundler, no Node.
+
+**The app is published on `127.0.0.1` by default.** The rate limiter trusts
+private-range peers as reverse proxies, so anything that can reach the port can
+claim any client address. Set `APP_BIND=0.0.0.0` in `.env` when you deliberately
+want it on the LAN — testing from a physical phone, say. `/launch` does not need
+it; the tunnel reaches the app over the compose network.
+
+## What the installers set up
+
+`install-claude.sh` and `install-opencode.sh` register two **remote, third-party
+MCP servers** in your harness config — [Stripe](https://mcp.stripe.com/) (used by
+`/build` when `SEED.md` asks for payments) and
+[Context7](https://mcp.context7.com/mcp) (library documentation lookup) — and
+enable web fetch and search for build subagents. They are useful defaults, not
+requirements: a build works without them, and you can drop either entry from
+`~/.claude.json` or `.opencode/opencode.json` if you would rather not extend
+trust to them. The `gova` builder itself is a local CLI and is not an MCP server.
 
 ## iOS
 

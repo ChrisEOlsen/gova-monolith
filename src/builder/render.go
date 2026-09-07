@@ -23,6 +23,10 @@ type TemplateData struct {
 	Method       string
 	Title        string
 	CRUD         bool
+	// Owned scopes every generated query to the session user. It is the whole
+	// switch: the model methods take a user id, the SQL carries
+	// `AND user_id = ?`, and the handlers fill it from the request context.
+	Owned bool
 }
 
 func newData(name string, fields []Field) TemplateData {
@@ -40,6 +44,10 @@ var funcMap = template.FuncMap{
 	"goType":    goTypeFor,
 	"sqlType":   sqlTypeFor,
 	"inputType": htmlInputType,
+
+	// ownerColumn is the one place the scoping column is named, so a template
+	// cannot spell it differently from the schema check that requires it.
+	"ownerColumn": func() string { return OwnerColumn },
 
 	"titleCase": func(s string) string {
 		words := strings.Fields(strings.ReplaceAll(s, "_", " "))

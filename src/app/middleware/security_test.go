@@ -44,3 +44,22 @@ func TestSecurityHeaders(t *testing.T) {
 		t.Errorf("CSP allows unsafe inline/eval, which defeats the point: %s", csp)
 	}
 }
+
+// HSTS is sent on every response, plain HTTP included: browsers ignore it
+// there, so there is nothing to gate on APP_ENV and no dev/prod branch that can
+// be wrong.
+func TestSecurity_SetsHSTS(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Security(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	got := rec.Header().Get("Strict-Transport-Security")
+	if got == "" {
+		t.Fatal("no Strict-Transport-Security header")
+	}
+	if !strings.Contains(got, "max-age=") || !strings.Contains(got, "includeSubDomains") {
+		t.Errorf("HSTS = %q, want a max-age with includeSubDomains", got)
+	}
+	if strings.Contains(got, "preload") {
+		t.Error("HSTS must not claim preload — that is a submission a template cannot make for a downstream app")
+	}
+}

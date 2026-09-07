@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	// The CGO SQLite driver, registered for database/sql. It lives here rather
 	// than in a test file so the shipped binary carries it.
@@ -49,7 +50,9 @@ func inspect() (string, error) {
 		if err != nil {
 			return err
 		}
-		data, err := json.MarshalIndent(buildInspection(m, onDisk), "", "  ")
+		report := buildInspection(m, onDisk)
+		report.Divergence = append(report.Divergence, generatedDivergence(handlersDir(), m)...)
+		data, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			return err
 		}
@@ -82,9 +85,9 @@ func executeSQL(query string) (string, error) {
 }
 
 // prepareModel runs the checks every model-producing command shares: a safe
-// name, at least one field, a table that exists and matches the declaration,
-// and no dangling foreign key.
-func prepareModel(name string, rawFields []string) ([]Field, error) {
+// name, safe field names, at least one field, a table that exists and matches
+// the declaration, and no dangling foreign key.
+func prepareModel(name string, rawFields []string, owned bool) ([]Field, error) {
 	if !isSafeIdent(name) {
 		return nil, errors.New("-name must be alphanumeric and underscore only")
 	}
@@ -95,7 +98,10 @@ func prepareModel(name string, rawFields []string) ([]Field, error) {
 	if len(fields) == 0 {
 		return nil, errors.New("-fields is required (at least one name:type pair)")
 	}
-	fields, err := applySchema(toPlural(name), fields)
+	if err := checkSafeFieldNames(fields); err != nil {
+		return nil, err
+	}
+	fields, err := applySchema(toPlural(name), fields, owned)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +111,35 @@ func prepareModel(name string, rawFields []string) ([]Field, error) {
 	return fields, nil
 }
 
-func createModel(name string, rawFields []string) (string, error) {
-	fields, err := prepareModel(name, rawFields)
+// checkSafeFieldNames holds field names to the same rule as the model name.
+//
+// A field name is not merely a SQL identifier here — it is interpolated into
+// generated Go (a struct tag, an identifier), into generated JS (an object key)
+// and into generated HTML (a label). isSafeIdent on -name alone left that whole
+// path open: `gova sql` will create a column called anything at all, and the
+// caller upstream of these tools is an agent that may be acting on text it was
+// handed. One regex closes it for every template at once.
+func checkSafeFieldNames(fields []Field) error {
+	for _, f := range fields {
+		if !isSafeIdent(f.Name) {
+			return fmt.Errorf("field name %q must be alphanumeric and underscore only — "+
+				"field names are interpolated into generated Go, JS and HTML", f.Name)
+		}
+		if f.Ref != "" && !isSafeIdent(f.Ref) {
+			return fmt.Errorf("field %q references %q, which must be alphanumeric and underscore only",
+				f.Name, f.Ref)
+		}
+	}
+	return nil
+}
+
+func createModel(name string, rawFields []string, owned bool) (string, error) {
+	fields, err := prepareModel(name, rawFields, owned)
 	if err != nil {
 		return "", err
 	}
 	data := newData(name, fields)
+	data.Owned = owned
 
 	written, err := renderAll(data, []fileSpec{
 		{"model.go.tmpl", filepath.Join(modelsDir(), toPascal(name)+".go")},
@@ -123,10 +152,20 @@ func createModel(name string, rawFields []string) (string, error) {
 	// A model registers no route, so only `models` is touched — but it does
 	// register: a model missing from the manifest while endpoints reference it
 	// is a hole nothing goes looking for.
-	if err := updateManifest([]Model{fieldsToModel(name, toPlural(name), fields)}, nil, nil); err != nil {
+	if err := updateManifest([]Model{fieldsToModel(name, toPlural(name), fields, owned)}, nil, nil); err != nil {
 		return "", fmt.Errorf("manifest update failed: %w", err)
 	}
-	return written + "\n\nRegistered model " + name + " in api.json.", nil
+	return written + "\n\nRegistered model " + name + " in api.json." + ownerNote(owned), nil
+}
+
+// ownerNote is the reminder appended to any owned scaffold's report: the
+// generated methods take a user id, and nothing else can supply it.
+func ownerNote(owned bool) string {
+	if !owned {
+		return ""
+	}
+	return "\nOwned: every generated query is scoped to " + OwnerColumn +
+		"; the model methods take the session user id as their first argument."
 }
 
 func createHandler(name, method, path string, auth bool, summary, requestSchema, responseSchema string) (string, error) {
@@ -221,14 +260,21 @@ func validatePagePath(path string) error {
 	return nil
 }
 
-func scaffoldResource(name string, rawFields []string) (string, error) {
-	fields, err := prepareModel(name, rawFields)
+func scaffoldResource(name string, rawFields []string, public, owned bool) (string, error) {
+	if owned && public {
+		return "", errors.New("-owner and -public are contradictory: an owned resource is scoped to the " +
+			"session user, and a public route has no session user to scope to")
+	}
+	fields, err := prepareModel(name, rawFields, owned)
 	if err != nil {
 		return "", err
 	}
 
+	auth := !public
 	data := newData(name, fields)
 	data.CRUD = true
+	data.Owned = owned
+	data.AuthRequired = auth
 	data.Title = toPascal(toPlural(name))
 	plural := toPlural(name)
 
@@ -244,15 +290,64 @@ func scaffoldResource(name string, rawFields []string) (string, error) {
 		return "", err
 	}
 
-	model := fieldsToModel(name, plural, fields)
-	if err := updateManifest([]Model{model}, resourceEndpoints(model), []Page{listPage(name, data.Title)}); err != nil {
+	model := fieldsToModel(name, plural, fields, owned)
+	if err := updateManifest([]Model{model}, resourceEndpoints(model, auth), []Page{listPage(name, data.Title, auth)}); err != nil {
 		return "", fmt.Errorf("manifest update failed: %w", err)
 	}
 	return written +
 		"\n\nRegistered CRUD for /api/v1/" + plural + " and the page /" + plural +
 		" in api.json + routes_gen.go + pages_gen.go." +
 		"\nThe page includes a create form and delete buttons." +
-		"\nEndpoints are public — set auth:true per endpoint in api.json to protect them.", nil
+		authNote(auth) + ownerNote(owned), nil
+}
+
+// authNote reports what the scaffold just decided about who may call it. Said
+// out loud on both branches: the default is the guarded one, and a caller who
+// passed -public should see that written back to them.
+func authNote(auth bool) string {
+	if auth {
+		return "\nEndpoints and page require a signed-in caller (auth:true). " +
+			"Pass -public to open them."
+	}
+	return "\nPUBLIC: these endpoints answer anyone, including writes. " +
+		"Nothing else in the app will check for you."
+}
+
+// regen re-renders routes_gen.go, pages_gen.go and pages_gen_test.go from
+// api.json, without scaffolding anything.
+//
+// It exists because api.json is editable by hand and the generated files were
+// only ever rewritten as a side effect of a scaffold. Flipping auth:true on an
+// endpoint therefore did nothing until the next unrelated `gova` command
+// happened to run — the manifest said the route was guarded and the router
+// still mounted it bare. This is the command that makes a hand edit take
+// effect, and `gova inspect` is what tells you one is pending.
+func regen() (string, error) {
+	var out string
+	err := withWorkspaceLock(func() error {
+		m, err := readManifestAt(manifestPath())
+		if err != nil {
+			return err
+		}
+		// api.json is rewritten too, not just read. Its builder_version and
+		// hash are provenance for the generated files — leaving them behind
+		// after a regen would have inspect reporting a stale builder forever,
+		// with no command able to clear it.
+		if err := writeManifestAt(manifestPath(), &m, time.Now()); err != nil {
+			return err
+		}
+		if err := regenerateRoutesAt(handlersDir(), m); err != nil {
+			return err
+		}
+		if err := regeneratePagesAt(handlersDir(), m); err != nil {
+			return err
+		}
+		out = fmt.Sprintf("Regenerated routes_gen.go, pages_gen.go and pages_gen_test.go from api.json "+
+			"(%d endpoints, %d pages).\nRestart the app for it to take effect: docker compose restart app",
+			len(m.Endpoints), len(m.Pages))
+		return nil
+	})
+	return out, err
 }
 
 type fileSpec struct{ tmpl, out string }
@@ -275,21 +370,21 @@ func renderAll(data TemplateData, specs []fileSpec) (string, error) {
 // (/login, /register). Since toPlural never returns its input unchanged, a
 // resource named "login" lands at /logins — so the two namespaces cannot
 // collide without needing a reserved-word list to enforce it.
-func listPage(name, title string) Page {
+func listPage(name, title string, auth bool) Page {
 	plural := toPlural(name)
-	return Page{Path: "/" + plural, File: plural, Title: title}
+	return Page{Path: "/" + plural, File: plural, Title: title, Auth: auth}
 }
 
 // resourceEndpoints are the five CRUD endpoints a resource registers. The
 // handler symbols must match resource_handlers.go.tmpl exactly.
-func resourceEndpoints(m Model) []Endpoint {
+func resourceEndpoints(m Model, auth bool) []Endpoint {
 	p := toPascal(m.Name)
 	base := "/api/v1/" + toPlural(m.Name)
 	deps := []string{"db", "cache"}
 	mk := func(method, path, handler, kind string) Endpoint {
 		return Endpoint{
 			Method: method, Path: path, Handler: handler, Deps: deps,
-			Model: m.Name, Kind: kind,
+			Model: m.Name, Kind: kind, Auth: auth,
 			Request:  resourceRequest(m, kind),
 			Response: resourceResponse(m, kind),
 		}

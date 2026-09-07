@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -197,6 +198,9 @@ func TestCLI_Model(t *testing.T) {
 	}
 }
 
+// A page is guarded unless the caller says otherwise. The default is the whole
+// point: an author who forgets to think about access control gets the safe
+// answer, and opening a page is an explicit act.
 func TestCLI_Page(t *testing.T) {
 	gova := newApp(t)
 	mustRun(t, gova, "page", "-file", "dashboard", "-title", "Dashboard", "-path", "/dashboard")
@@ -208,9 +212,32 @@ func TestCLI_Page(t *testing.T) {
 	if len(m.Pages) != 1 || m.Pages[0].Path != "/dashboard" {
 		t.Fatalf("pages = %+v", m.Pages)
 	}
+	if !m.Pages[0].Auth {
+		t.Error("a page scaffolded without -public must be registered auth:true")
+	}
 	pages, _ := os.ReadFile(filepath.Join(handlersDir(), "pages_gen.go"))
-	if !strings.Contains(string(pages), `r.Get("/dashboard", pageFile("dashboard"))`) {
-		t.Errorf("pages_gen.go does not mount the page:\n%s", pages)
+	if !strings.Contains(string(pages), `r.With(middleware.RequirePageAuth).Get("/dashboard", pageFile("dashboard"))`) {
+		t.Errorf("pages_gen.go did not mount the page behind RequirePageAuth:\n%s", pages)
+	}
+	// The generated module gates itself too, so a signed-out visitor who
+	// somehow reaches the shell does not sit looking at an empty page.
+	js, _ := os.ReadFile(filepath.Join(jsDir(), "dashboard.js"))
+	if !strings.Contains(string(js), "requireAuth") {
+		t.Errorf("dashboard.js does not call requireAuth:\n%s", js)
+	}
+}
+
+func TestCLI_PagePublic(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "page", "-file", "landing", "-title", "Landing", "-path", "/landing", "-public")
+
+	m := readManifest(t)
+	if len(m.Pages) != 1 || m.Pages[0].Auth {
+		t.Fatalf("-public must register auth:false: %+v", m.Pages)
+	}
+	pages, _ := os.ReadFile(filepath.Join(handlersDir(), "pages_gen.go"))
+	if !strings.Contains(string(pages), `r.Get("/landing", pageFile("landing"))`) {
+		t.Errorf("pages_gen.go did not mount the public page unguarded:\n%s", pages)
 	}
 }
 
@@ -232,7 +259,7 @@ func TestCLI_Handler(t *testing.T) {
 	gova := newApp(t)
 	mustRun(t, gova, "handler",
 		"-name", "archive", "-method", "post", "-path", "/api/v1/projects/{id}/archive",
-		"-auth", "-summary", "Archive a project",
+		"-summary", "Archive a project",
 		"-response-schema", `{"shape":"object","fields":[{"name":"ok","type":"boolean"}]}`)
 
 	if !fileExists(t, "handlers", "archive.go") {
@@ -252,10 +279,25 @@ func TestCLI_Handler(t *testing.T) {
 	if e.Summary != "Archive a project" || e.Response == nil || e.Response.Fields[0].Name != "ok" {
 		t.Errorf("schema/summary lost: %+v", e)
 	}
-	// auth:true must produce the RequireAuth wrap.
+	// auth:true is the default and must produce the RequireAuth wrap.
 	routes, _ := os.ReadFile(filepath.Join(handlersDir(), "routes_gen.go"))
 	if !strings.Contains(string(routes), "middleware.RequireAuth") {
 		t.Errorf("auth endpoint was not wrapped:\n%s", routes)
+	}
+}
+
+func TestCLI_HandlerPublic(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "handler",
+		"-name", "healthz", "-method", "GET", "-path", "/api/v1/healthz", "-public")
+
+	m := readManifest(t)
+	if len(m.Endpoints) != 1 || m.Endpoints[0].Auth {
+		t.Fatalf("-public must register auth:false: %+v", m.Endpoints)
+	}
+	routes, _ := os.ReadFile(filepath.Join(handlersDir(), "routes_gen.go"))
+	if strings.Contains(string(routes), "middleware.RequireAuth") {
+		t.Errorf("a public endpoint must not be wrapped:\n%s", routes)
 	}
 }
 
@@ -409,5 +451,270 @@ func TestCLI_SQLPersistsAcrossInvocations(t *testing.T) {
 	if err := database.QueryRow(
 		"SELECT name FROM sqlite_master WHERE type='table' AND name='projects'").Scan(&name); err != nil {
 		t.Fatalf("table did not persist: %v", err)
+	}
+}
+
+// ─── access control ──────────────────────────────────────────────────────────
+
+// ownedNotesTable is the shape -owner requires. `users` has to exist too: the
+// foreign key is checked against the real schema, not against a naming
+// convention.
+const usersTable = `CREATE TABLE users (
+	id INTEGER PRIMARY KEY,
+	email TEXT NOT NULL UNIQUE,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`
+
+const ownedNotesTable = `CREATE TABLE notes (
+	id INTEGER PRIMARY KEY,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	title TEXT NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`
+
+// The default is the guarded one. A scaffold that says nothing about access
+// control produces routes nobody anonymous can call — the old default produced
+// five open routes including DELETE, and nothing in the pipeline asked.
+func TestCLI_ResourceIsGuardedByDefault(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", projectsTable)
+	out := mustRun(t, gova, "resource", "-name", "project", "-fields", "name:string,status:string,priority:int")
+
+	m := readManifest(t)
+	for _, e := range m.Endpoints {
+		if !e.Auth {
+			t.Errorf("%s %s was registered public", e.Method, e.Path)
+		}
+	}
+	if !m.Pages[0].Auth {
+		t.Error("the resource page was registered public")
+	}
+	routes, _ := os.ReadFile(filepath.Join(handlersDir(), "routes_gen.go"))
+	if n := strings.Count(string(routes), "middleware.RequireAuth"); n != 5 {
+		t.Errorf("want 5 RequireAuth wraps, got %d:\n%s", n, routes)
+	}
+	if !strings.Contains(out, "require a signed-in caller") {
+		t.Errorf("report did not state the access decision: %s", out)
+	}
+}
+
+func TestCLI_ResourcePublic(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", projectsTable)
+	out := mustRun(t, gova, "resource", "-name", "project",
+		"-fields", "name:string,status:string,priority:int", "-public")
+
+	m := readManifest(t)
+	for _, e := range m.Endpoints {
+		if e.Auth {
+			t.Errorf("%s %s: -public must register auth:false", e.Method, e.Path)
+		}
+	}
+	if m.Pages[0].Auth {
+		t.Error("-public must register the page auth:false too")
+	}
+	routes, _ := os.ReadFile(filepath.Join(handlersDir(), "routes_gen.go"))
+	if strings.Contains(string(routes), "middleware.RequireAuth") {
+		t.Errorf("a public resource must not be wrapped:\n%s", routes)
+	}
+	// The report says so out loud: -public is the branch that needs saying.
+	if !strings.Contains(out, "PUBLIC") {
+		t.Errorf("report did not warn that the routes are open: %s", out)
+	}
+}
+
+func TestCLI_ResourceOwner(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", usersTable)
+	mustRun(t, gova, "sql", "-query", ownedNotesTable)
+	mustRun(t, gova, "resource", "-name", "note", "-fields", "title:string", "-owner")
+
+	m := readManifest(t)
+	var note *Model
+	for i := range m.Models {
+		if m.Models[i].Name == "note" {
+			note = &m.Models[i]
+		}
+	}
+	if note == nil {
+		t.Fatal("api.json does not declare the note model")
+	}
+	if !note.Owned {
+		t.Error(`model is not marked "owned" in the manifest`)
+	}
+	// user_id is implicit, like id and created_at: a client neither sends it
+	// nor reads it back, so it must not appear in the model's field list.
+	for _, f := range note.Fields {
+		if f.Name == OwnerColumn {
+			t.Errorf("%s leaked into models[].fields — a client would then be able to send it", OwnerColumn)
+		}
+	}
+
+	model, err := os.ReadFile(filepath.Join(modelsDir(), "Note.go"))
+	if err != nil {
+		t.Fatalf("read generated model: %v", err)
+	}
+	src := string(model)
+	for _, want := range []string{
+		"WHERE user_id = ?",                  // list
+		"WHERE id = ? AND user_id = ?",       // find / update / delete
+		"INSERT INTO notes (user_id, title)", // create stamps the owner
+		`"notes:page:%d:%d:%d:`,              // owner is in the cache key
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated model is missing %q:\n%s", want, src)
+		}
+	}
+
+	handler, _ := os.ReadFile(filepath.Join(handlersDir(), "note_resource.go"))
+	if !strings.Contains(string(handler), "middleware.UserID(r)") {
+		t.Errorf("generated handler does not read the session user:\n%s", handler)
+	}
+	// The request struct must have nowhere to put an owner id.
+	if strings.Contains(string(handler), `json:"user_id"`) {
+		t.Errorf("the request struct accepts user_id:\n%s", handler)
+	}
+}
+
+// Each of these is a way to end up with scoping that does not actually scope.
+// They are refused at scaffold time, where the author can still fix the table.
+func TestCLI_OwnerRejectsUnusableTables(t *testing.T) {
+	cases := map[string]struct{ ddl, wantIn string }{
+		"no owner column": {
+			`CREATE TABLE things (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+			 created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+			`has no "user_id" column`,
+		},
+		"nullable owner": {
+			`CREATE TABLE things (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id),
+			 title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+			"is nullable",
+		},
+		"no foreign key": {
+			`CREATE TABLE things (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
+			 title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+			"does not reference users(id)",
+		},
+		"owner column is text": {
+			`CREATE TABLE things (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+			 title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`,
+			"scanned as an int64",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			gova := newApp(t)
+			mustRun(t, gova, "sql", "-query", usersTable)
+			mustRun(t, gova, "sql", "-query", c.ddl)
+			_, err := gova("resource", "-name", "thing", "-fields", "title:string", "-owner")
+			if err == nil {
+				t.Fatal("must be refused")
+			}
+			if !strings.Contains(err.Error(), c.wantIn) {
+				t.Errorf("error should say %q, got: %v", c.wantIn, err)
+			}
+		})
+	}
+}
+
+func TestCLI_OwnerAndPublicAreContradictory(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", usersTable)
+	mustRun(t, gova, "sql", "-query", ownedNotesTable)
+	_, err := gova("resource", "-name", "note", "-fields", "title:string", "-owner", "-public")
+	if err == nil {
+		t.Fatal("-owner with -public must be refused")
+	}
+	if !strings.Contains(err.Error(), "contradictory") {
+		t.Errorf("error should explain the contradiction, got: %v", err)
+	}
+}
+
+// Declaring an implicit column would put it in the request body and the UPDATE
+// SET clause — for user_id, that is a client handing its row to somebody else.
+func TestCLI_ImplicitColumnsCannotBeDeclared(t *testing.T) {
+	for _, field := range []string{"user_id:int", "created_at:timestamp", "id:int"} {
+		gova := newApp(t)
+		mustRun(t, gova, "sql", "-query", usersTable)
+		mustRun(t, gova, "sql", "-query", ownedNotesTable)
+		_, err := gova("resource", "-name", "note", "-fields", "title:string,"+field, "-owner")
+		if err == nil {
+			t.Errorf("%s: declaring an implicit column must be refused", field)
+			continue
+		}
+		if !strings.Contains(err.Error(), "implicit column") {
+			t.Errorf("%s: error should name the reason, got: %v", field, err)
+		}
+	}
+}
+
+// A field name reaches generated Go, JS and HTML. -name was checked; field
+// names were not, and `gova sql` will create a column called anything at all.
+func TestCLI_RejectsUnsafeFieldNames(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", `CREATE TABLE evils (
+		id INTEGER PRIMARY KEY, "a<script>" TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)
+	_, err := gova("resource", "-name", "evil", "-fields", "a<script>:string")
+	if err == nil {
+		t.Fatal("a hostile field name must be refused")
+	}
+	if !strings.Contains(err.Error(), "alphanumeric") {
+		t.Errorf("error should name the rule, got: %v", err)
+	}
+}
+
+// ─── regen ───────────────────────────────────────────────────────────────────
+
+// Editing api.json by hand is the documented way to change an existing route's
+// auth. It used to be a silent no-op until some unrelated scaffold happened to
+// run: the manifest claimed a guard the router had never mounted, and inspect
+// did not look. This is that loop, closed.
+func TestCLI_RegenAppliesAHandEditAndInspectReportsOne(t *testing.T) {
+	gova := newApp(t)
+	mustRun(t, gova, "sql", "-query", projectsTable)
+	mustRun(t, gova, "resource", "-name", "project",
+		"-fields", "name:string,status:string,priority:int", "-public")
+
+	routesPath := filepath.Join(handlersDir(), "routes_gen.go")
+	if before, _ := os.ReadFile(routesPath); strings.Contains(string(before), "RequireAuth") {
+		t.Fatal("fixture is wrong: the public resource should start unwrapped")
+	}
+
+	// The hand edit: guard the list endpoint.
+	m := readManifest(t)
+	for i := range m.Endpoints {
+		if m.Endpoints[i].Method == "GET" && m.Endpoints[i].Path == "/api/v1/projects" {
+			m.Endpoints[i].Auth = true
+		}
+	}
+	if err := writeManifestAt(manifestPath(), &m, time.Now()); err != nil {
+		t.Fatalf("write edited manifest: %v", err)
+	}
+
+	// Nothing has regenerated, so the router still mounts the route bare — and
+	// inspect must say so rather than reporting a healthy app.
+	if after, _ := os.ReadFile(routesPath); strings.Contains(string(after), "RequireAuth") {
+		t.Fatal("editing api.json should not have changed routes_gen.go on its own")
+	}
+	if div := generatedDivergence(handlersDir(), m); len(div) == 0 {
+		t.Error("inspect did not report the pending edit")
+	} else if !strings.Contains(div[0], "gova regen") {
+		t.Errorf("divergence should name the fix, got: %v", div)
+	}
+
+	mustRun(t, gova, "regen")
+
+	after, _ := os.ReadFile(routesPath)
+	if !strings.Contains(string(after), `r.With(middleware.RequireAuth).Get("/api/v1/projects"`) {
+		t.Errorf("regen did not apply the edit:\n%s", after)
+	}
+	if div := generatedDivergence(handlersDir(), readManifest(t)); len(div) != 0 {
+		t.Errorf("regen left divergence behind: %v", div)
+	}
+	// regen re-stamps provenance too, or inspect reports a stale builder with
+	// no command able to clear it.
+	if readManifest(t).BuilderVersion != builderVersion {
+		t.Error("regen did not re-stamp builder_version")
 	}
 }

@@ -5,8 +5,16 @@ services:
     build:
       context: .
       target: app
+    # Published on loopback only. The app trusts private-range peers as reverse
+    # proxies (handlers/clientip.go), which means any host that can open a TCP
+    # connection here can also set CF-Connecting-IP and mint itself unlimited
+    # rate-limit buckets — bypassing brute-force protection on /auth/login. On
+    # 0.0.0.0 that was every machine on the LAN. Set APP_BIND=0.0.0.0 in .env to
+    # expose it deliberately (testing on a physical device, say); the tunnel
+    # added by /launch does not need it, since it reaches the app over the
+    # compose network at app:${APP_PORT}.
     ports:
-      - "${APP_PORT:-8080}:${APP_PORT:-8080}"
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:${APP_PORT:-8080}"
     volumes:
       - ./src:/src
       - ./data:/data

@@ -30,9 +30,11 @@ endpoints and pages live there. The tools write it and regenerate
 both with one call each. **Never hand-wire a route and never edit a `*_gen.go`
 file** — if a route is wrong, the manifest is wrong.
 
-**Auth ships with the template.** Sessions, CSRF, bcrypt, rate limiting, and
-bearer tokens for native clients are committed code in `src/app`, not something
-you scaffold. See `docs/API-CONTRACT.md`.
+**Auth ships with the template, and everything you generate is behind it.**
+Sessions, CSRF, bcrypt, rate limiting, and bearer tokens for native clients are
+committed code in `src/app`, not something you scaffold. Every route and page a
+`gova` command emits requires a signed-in caller; `-public` is how you open one,
+and you should have a reason. See `docs/API-CONTRACT.md`.
 
 **Where things go.** Go handlers return JSON only, in `handlers/`. Database
 access is model methods only, in `models/`. Page shells are inert HTML in
@@ -52,9 +54,14 @@ customize what it generated → restart. Start with `./gova inspect`.
 Always `id INTEGER PRIMARY KEY` and `created_at DATETIME DEFAULT
 CURRENT_TIMESTAMP` — both are required and checked at scaffold time.
 
+**If the rows belong to a user, add the owner column and scaffold with
+`-owner`.** Ask this question for every table: would one user seeing another's
+rows be a bug? If yes, it is an owned resource.
+
 ```sql
 CREATE TABLE projects (
     id         INTEGER PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name       TEXT NOT NULL,
     status     TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -65,12 +72,17 @@ CREATE TABLE projects (
 
 ```bash
 ./gova sql -query "CREATE TABLE projects (...)"
-./gova resource -name project -fields name:string,status:string
+./gova resource -name project -fields name:string,status:string -owner
 ```
 
 That one command writes the model, five CRUD handlers, and a page with a create
-form and delete buttons, and registers all of it. For anything that is not a
-CRUD resource, use `./gova model`, `./gova page` and `./gova handler`.
+form and delete buttons, and registers all of it — behind `RequireAuth`, and
+with every query scoped to the session user. For anything that is not a CRUD
+resource, use `./gova model`, `./gova page` and `./gova handler`.
+
+`user_id` is never in `-fields`: it is an implicit column like `id` and
+`created_at`, set from the session and absent from the request body, the
+response JSON and the manifest. Declaring it is an error.
 
 ### 3. Customize
 Edit the generated `.js` for behavior and `.html` for layout. Go logic stays in
@@ -111,10 +123,15 @@ something, say which rule made it infrastructure.
    - NEVER `console.log()` a token, password, or session value.
 4. **No Node or npm.** Tailwind standalone only. No CDN script tags — the CSP
    blocks them anyway.
-5. **Security is already wired.** CSRF, sessions, rate limiting, bcrypt and the
-   CSP live in `middleware/` and `handlers/`. Protect an endpoint by setting
-   `auth: true` on it in `api.json`; protect a page the same way. Do not
-   re-check auth inside a handler — the route wrap does it.
+5. **Security is already wired, and on by default.** CSRF, sessions, rate
+   limiting, bcrypt and the CSP live in `middleware/` and `handlers/`.
+   Everything scaffolded is registered `auth: true`; open a route with
+   `-public`. Do not re-check auth inside a handler — the route wrap does it.
+   Reading `middleware.UserID(r)` to scope a query is not a re-check.
+6. **A hand edit to `api.json` needs `./gova regen`.** The `*_gen.go` files are
+   rendered from the manifest, not read from it at runtime, so flipping `auth`
+   by hand changes nothing until you regenerate. `./gova inspect` reports the
+   mismatch.
 
 Full wire details — envelope, codes, timestamps, pagination, the manifest
 fields native clients read — are in **`docs/API-CONTRACT.md`**. Read it before
@@ -135,13 +152,23 @@ Run `./gova help`, or `./gova <command> -h` for a command's flags.
 | `./gova handler -name x -method POST -path /api/v1/...` | One custom JSON endpoint; self-registers | No — write one |
 | `./gova page -file x -title X -path /x` | `.html` + `.js` at a human URL; no Go handler needed | Yes |
 | `./gova resource -name x -fields ...` | Full CRUD + page + form. Table must exist | Yes |
+| `./gova regen` | Re-render the `*_gen.go` files after editing `api.json` by hand | — |
+
+**Access control flags.** `-public` (on `page`, `handler`, `resource`) opens a
+route to anonymous callers; without it everything is guarded. `-owner` (on
+`model`, `resource`) scopes every generated query to the session user — the
+table must carry `user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE
+CASCADE`, and another user's row answers 404, never 403. `-owner` and `-public`
+are refused together.
 
 `gova page` refuses `/api/`; `gova handler` requires `/api/v1/`. The two
 namespaces cannot collide. Resource pages are plural (`/projects`); the auth
 pages are singular (`/login`, `/register`).
 
 **Fields** are a comma-separated `name:type` list —
-`-fields "title:string,quantity:int,due_at:datetime"`.
+`-fields "title:string,quantity:int,due_at:datetime"`. Field names must be
+alphanumeric and underscore only: they are interpolated into generated Go, JS
+and HTML.
 
 **Types:** `string`, `int`, `float`, `boolean`, `timestamp`. An unknown type is
 an error. A DATETIME column must be `timestamp`, never `string`.

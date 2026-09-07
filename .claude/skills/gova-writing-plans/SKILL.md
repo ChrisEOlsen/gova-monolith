@@ -120,7 +120,7 @@ gova command first for every feature file).]
 
 **Files:**
 - Table: `feature_names` (via `./gova sql`)
-- Scaffold: `./gova resource -name feature_name -fields ...` — model, five CRUD handlers, and a page with a create form and delete buttons, all self-registered in api.json + routes_gen.go + pages_gen.go
+- Scaffold: `./gova resource -name feature_name -fields ... [-owner]` — model, five CRUD handlers, and a page with a create form and delete buttons, all self-registered in api.json + routes_gen.go + pages_gen.go, behind `RequireAuth`
 - Modify: `src/app/static/js/feature_names.js` — [what customization is needed]
 - Modify: `src/app/handlers/feature_name_resource.go` — [what customization is needed, if any]
 
@@ -133,12 +133,22 @@ gova command first for every feature file).]
 - [ ] **Step 1: Scaffold** *(the executor runs this before dispatch)*
 
 ```bash
-./gova sql -query "CREATE TABLE feature_names (id INTEGER PRIMARY KEY, name TEXT NOT NULL, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);"
-./gova resource -name feature_name -fields name:string,status:string
+./gova sql -query "CREATE TABLE feature_names (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);"
+./gova resource -name feature_name -fields name:string,status:string -owner
 ```
 
 Generates `models/FeatureName.go`, `handlers/feature_name_resource.go`,
 `static/pages/feature_names.html`, `static/js/feature_names.js` and their tests.
+
+**Every task states its access decision.** The scaffold guards everything by
+default, so what a plan has to carry is the two choices that are not the
+default:
+
+- `-owner` if the rows belong to one user — the table needs the `user_id` column
+  above, `user_id` never appears in `-fields`, and another user's row answers
+  404. Drop both if the resource is genuinely shared between all users.
+- `-public` on the rare route that must answer anonymous callers. Name the
+  reason in the task; a reviewer should not have to guess.
 
 - [ ] **Step 2: Customize**
 

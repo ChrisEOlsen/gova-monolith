@@ -24,8 +24,16 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'self'"
 
+// strictTransportSecurity is sent unconditionally. A browser ignores the
+// header on a plain-HTTP response, so there is nothing to gate on APP_ENV and
+// no way for a local dev run to poison a later production one. Two years with
+// subdomains included; no `preload`, which is a submission to a browser vendor
+// and not a decision a template makes for a downstream app.
+const strictTransportSecurity = "max-age=63072000; includeSubDomains"
+
 func Security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Strict-Transport-Security", strictTransportSecurity)
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")

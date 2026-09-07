@@ -34,11 +34,17 @@ func isSafeMethod(method string) bool {
 
 // isBearerRequest reports whether the caller authenticates with a bearer token.
 // Such a client holds no ambient cookie for this origin, so there is nothing a
-// cross-site request could replay. login_token is exempt by path because it is
-// the request that issues the token and cannot carry one yet.
+// cross-site request could replay.
+//
+// This used to also exempt /api/v1/auth/login_token by path, on the grounds
+// that the request issuing a token cannot yet carry one. The path string was
+// load-bearing security pinned to a route name — rename the route and the
+// exemption silently moves. It was also unnecessary: a native client holds no
+// cookies at all, so the verification below never fires for it. What the path
+// exemption actually covered was a *browser* calling login_token, which should
+// send a CSRF token like every other unsafe request from a browser.
 func isBearerRequest(r *http.Request) bool {
-	return r.URL.Path == "/api/v1/auth/login_token" ||
-		strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
 // CSRF implements the double-submit cookie scheme.

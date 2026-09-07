@@ -191,23 +191,27 @@ func TestCSRF_BearerExemptionSurivesAmbientCookies(t *testing.T) {
 		t.Fatalf("bearer request with ambient cookies: want 200 (exempt), got %d", rec.Code)
 	}
 
-	// login_token by PATH, with the same cookies and no header at all.
+	// A native client — no cookies at all — is let through even with no
+	// Authorization header on the request that is about to obtain one. There is
+	// nothing to replay, which is the actual rule.
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login_token", nil)
-	req2.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
 	CSRF(okHandler()).ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusOK {
-		t.Fatalf("login_token with session cookie: want 200 (path-exempt), got %d", rec2.Code)
+		t.Fatalf("cookieless login_token: want 200, got %d", rec2.Code)
 	}
 
-	// ...and the same path WITHOUT the exemption's conditions — a wrong-path
-	// cookie bearing request — still verifies. The exemption must not leak
-	// beyond its two named cases.
-	rec3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
-	req3.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
-	CSRF(okHandler()).ServeHTTP(rec3, req3)
-	if rec3.Code != http.StatusForbidden {
-		t.Fatalf("login (not exempt) with session cookie and no token: want 403, got %d", rec3.Code)
+	// The exemption is the Bearer header and nothing else. login_token used to
+	// be exempt by path, which pinned a security decision to a route name; a
+	// browser holding ambient cookies must send a CSRF token there like
+	// everywhere else.
+	for _, path := range []string{"/api/v1/auth/login_token", "/api/v1/auth/login"} {
+		rec3 := httptest.NewRecorder()
+		req3 := httptest.NewRequest(http.MethodPost, path, nil)
+		req3.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "v|s"})
+		CSRF(okHandler()).ServeHTTP(rec3, req3)
+		if rec3.Code != http.StatusForbidden {
+			t.Errorf("%s with session cookie and no token: want 403, got %d", path, rec3.Code)
+		}
 	}
 }

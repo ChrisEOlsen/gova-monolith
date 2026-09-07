@@ -24,6 +24,15 @@ Then tell the developer: "APP_ENV set to production. Session cookies now require
 **4. `APP_URL`** — should be set to the public domain.
 If empty, warn (non-blocking): set APP_URL for Stripe webhooks / OAuth callbacks.
 
+**5. `APP_BIND`** — must not be `0.0.0.0` on a deployment.
+The tunnel reaches the app over the compose network at `app:${APP_PORT}`, so the
+published host port is only ever for local access. `0.0.0.0` additionally exposes
+it to every machine on the network the host sits on — and since the app trusts
+private-range peers as reverse proxies (`handlers/clientip.go`), any of them can
+set `CF-Connecting-IP` and mint unlimited rate-limit buckets, defeating
+brute-force protection on `/api/v1/auth/login`. If it is `0.0.0.0`, set it back
+to `127.0.0.1` and tell the developer why.
+
 ---
 
 ## Step 2: Add Cloudflare Tunnel to docker-compose.yml

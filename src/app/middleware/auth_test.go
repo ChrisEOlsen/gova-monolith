@@ -43,7 +43,7 @@ func mintCookie(t *testing.T, uid, epoch int64) string {
 // means Auth passed the request through anonymously.
 func authResult(t *testing.T, store EpochStore, cookieVal string) int {
 	t.Helper()
-	h := Auth(store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Auth(store, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if UserID(r) == 0 {
 			w.WriteHeader(http.StatusTeapot)
 			return
@@ -174,5 +174,104 @@ func TestRequirePageAuth_UnauthenticatedRedirects(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/login" {
 		t.Errorf("want redirect to /login, got %q", loc)
+	}
+}
+
+// tokenStub is a TokenStore that knows exactly one token.
+type tokenStub struct {
+	token  string
+	userID int64
+}
+
+func (t *tokenStub) UserIDForToken(raw string) (int64, bool) {
+	if raw != "" && raw == t.token {
+		return t.userID, true
+	}
+	return 0, false
+}
+
+// bearerResult runs a probe behind Auth with a bearer credential. 200 means an
+// identity was set, 418 means the request went through anonymously.
+func bearerResult(t *testing.T, tokens TokenStore, header string) int {
+	t.Helper()
+	testKey(t)
+	h := Auth(&epochStub{}, tokens)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if UserID(r) == 0 {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// A native client's bearer token must establish identity for every route, not
+// only the three hand-written _token endpoints. Without this, auth:true — now
+// the default on everything the scaffolder emits — would answer 401 to the iOS
+// client no matter how valid its token was.
+func TestAuth_BearerTokenEstablishesIdentity(t *testing.T) {
+	tokens := &tokenStub{token: "good-token", userID: 7}
+
+	if got := bearerResult(t, tokens, "Bearer good-token"); got != http.StatusOK {
+		t.Errorf("valid bearer: got %d, want 200", got)
+	}
+	for name, header := range map[string]string{
+		"no header":     "",
+		"unknown token": "Bearer nope",
+		"empty bearer":  "Bearer ",
+		"wrong scheme":  "Basic good-token",
+		"bare token":    "good-token",
+	} {
+		if got := bearerResult(t, tokens, header); got != http.StatusTeapot {
+			t.Errorf("%s: got %d, want 418 (anonymous)", name, got)
+		}
+	}
+
+	// A nil store is the legitimate "this app has no native clients" wiring and
+	// must not panic.
+	if got := bearerResult(t, nil, "Bearer good-token"); got != http.StatusTeapot {
+		t.Errorf("nil token store: got %d, want 418 (anonymous)", got)
+	}
+}
+
+// The cookie wins when both are present: it is the credential the CSRF layer
+// reasons about, so identity must not silently come from somewhere else.
+func TestAuth_CookieBeatsBearer(t *testing.T) {
+	testKey(t)
+	store := &epochStub{}
+	tokens := &tokenStub{token: "good-token", userID: 99}
+
+	var seen int64
+	h := Auth(store, tokens)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = UserID(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: mintCookie(t, 42, 0)})
+	req.Header.Set("Authorization", "Bearer good-token")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen != 42 {
+		t.Errorf("user id = %d, want 42 (the cookie's)", seen)
+	}
+}
+
+// RequireAuth is the wrap routes_gen.go puts on every auth:true endpoint. It
+// reads the context, so it must let a bearer-authenticated caller through.
+func TestRequireAuth_AcceptsBearerAuthenticatedRequest(t *testing.T) {
+	testKey(t)
+	h := Auth(&epochStub{}, &tokenStub{token: "good-token", userID: 3})(
+		RequireAuth(okHandler()))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	req.Header.Set("Authorization", "Bearer good-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("bearer through RequireAuth: got %d, want 200", rec.Code)
 	}
 }

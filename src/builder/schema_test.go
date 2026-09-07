@@ -40,7 +40,7 @@ func TestApplySchema_MarksNullableFields(t *testing.T) {
 		{Name: "count", Type: "int"},
 	}
 
-	got, err := applySchemaAt(dsn, "widgets", in)
+	got, err := applySchemaAt(dsn, "widgets", in, false)
 	if err != nil {
 		t.Fatalf("applySchemaAt: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestApplySchema_PreservesFieldOrder(t *testing.T) {
 		{Name: "title", Type: "string"},
 	}
 
-	got, err := applySchemaAt(dsn, "widgets", in)
+	got, err := applySchemaAt(dsn, "widgets", in, false)
 	if err != nil {
 		t.Fatalf("applySchemaAt: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestApplySchema_UnknownFieldFails(t *testing.T) {
 	dsn := testDSN(t, widgetSchema)
 	in := []Field{{Name: "stat", Type: "string"}}
 
-	_, err := applySchemaAt(dsn, "widgets", in)
+	_, err := applySchemaAt(dsn, "widgets", in, false)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -88,7 +88,7 @@ func TestApplySchema_TypeMismatchFails(t *testing.T) {
 	dsn := testDSN(t, widgetSchema)
 	in := []Field{{Name: "title", Type: "int"}}
 
-	_, err := applySchemaAt(dsn, "widgets", in)
+	_, err := applySchemaAt(dsn, "widgets", in, false)
 	if err == nil {
 		t.Fatal("expected error for type mismatch, got nil")
 	}
@@ -101,7 +101,7 @@ func TestApplySchema_MissingTableFails(t *testing.T) {
 	dsn := testDSN(t, widgetSchema)
 	in := []Field{{Name: "title", Type: "string"}}
 
-	_, err := applySchemaAt(dsn, "gadgets", in)
+	_, err := applySchemaAt(dsn, "gadgets", in, false)
 	if err == nil {
 		t.Fatal("expected error for missing table, got nil")
 	}
@@ -123,12 +123,12 @@ func TestApplySchema_RefusesCredentialColumns(t *testing.T) {
 	// The generated CRUD writes every field it decodes, so a request that
 	// merely omits a credential would blank it. Authentication is hand-written.
 	for _, name := range []string{"password_hash", "api_secret"} {
-		if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: name, Type: "string"}}); err == nil {
+		if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: name, Type: "string"}}, false); err == nil {
 			t.Errorf("field %q should be refused as a credential column", name)
 		}
 	}
 	// An ordinary column is unaffected.
-	if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: "nickname", Type: "string"}}); err != nil {
+	if _, err := applySchemaAt(dsn, "accounts", []Field{{Name: "nickname", Type: "string"}}, false); err != nil {
 		t.Errorf("nickname should be accepted: %v", err)
 	}
 }
@@ -163,7 +163,7 @@ func TestCheckReservedName(t *testing.T) {
 
 func TestApplySchema_UnsafeTableNameRejected(t *testing.T) {
 	dsn := testDSN(t, widgetSchema)
-	_, err := applySchemaAt(dsn, "widgets; DROP TABLE widgets", []Field{{Name: "title", Type: "string"}})
+	_, err := applySchemaAt(dsn, "widgets; DROP TABLE widgets", []Field{{Name: "title", Type: "string"}}, false)
 	if err == nil {
 		t.Fatal("expected error for unsafe table name, got nil")
 	}
@@ -177,7 +177,7 @@ func TestApplySchema_BooleanNotNullColumn(t *testing.T) {
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
-	got, err := applySchemaAt(dsn, "flags", in)
+	got, err := applySchemaAt(dsn, "flags", in, false)
 	if err != nil {
 		t.Fatalf("applySchemaAt: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestApplySchema_BooleanNullableColumn(t *testing.T) {
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
-	got, err := applySchemaAt(dsn, "flags", in)
+	got, err := applySchemaAt(dsn, "flags", in, false)
 	if err != nil {
 		t.Fatalf("applySchemaAt: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestApplySchema_IntegerBooleanColumn(t *testing.T) {
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
-	got, err := applySchemaAt(dsn, "flags", in)
+	got, err := applySchemaAt(dsn, "flags", in, false)
 	if err != nil {
 		t.Fatalf("applySchemaAt: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestApplySchema_BooleanFieldAgainstTextColumnFails(t *testing.T) {
 	)`)
 	in := []Field{{Name: "active", Type: "boolean"}}
 
-	_, err := applySchemaAt(dsn, "flags", in)
+	_, err := applySchemaAt(dsn, "flags", in, false)
 	if err == nil {
 		t.Fatal("expected error for boolean field against TEXT column, got nil")
 	}
@@ -290,7 +290,7 @@ func TestApplySchema_RequiresImplicitColumns(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			dsn := testDSN(t, c.schema)
-			_, err := applySchemaAt(dsn, "notes", []Field{{Name: "body", Type: "string"}})
+			_, err := applySchemaAt(dsn, "notes", []Field{{Name: "body", Type: "string"}}, false)
 			if err == nil {
 				t.Fatal("expected an error, got none — the model would select a column that does not exist")
 			}
@@ -313,7 +313,7 @@ func TestApplySchema_GoldenRecipeShapeAccepted(t *testing.T) {
 	got, err := applySchemaAt(dsn, "projects", []Field{
 		{Name: "name", Type: "string"},
 		{Name: "status", Type: "string"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("the CREATE TABLE from CLAUDE.md's Golden Recipe must scaffold: %v", err)
 	}
