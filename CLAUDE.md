@@ -132,6 +132,15 @@ something, say which rule made it infrastructure.
    rendered from the manifest, not read from it at runtime, so flipping `auth`
    by hand changes nothing until you regenerate. `./gova inspect` reports the
    mismatch.
+7. **Default to writing no comments.** Never write multi-paragraph docstrings or
+   multi-line comment blocks — one short line max.
+8. **No hyphens in app copy.** Any explanatory text a user reads in the web app —
+   headings, labels, placeholders, help text, button copy, empty states, error
+   and success messages, page titles — must contain no `-` character. Rewrite the
+   phrase instead of hyphenating it: "sign in", not "sign-in"; "read only", not
+   "read-only"; "up to date", not "up-to-date". Use an em dash (—) for a break in
+   a sentence and an en dash (–) for a range. This governs prose only; code
+   identifiers, URLs, CSS classes, dates and attribute values are untouched.
 
 Full wire details — envelope, codes, timestamps, pagination, the manifest
 fields native clients read — are in **`docs/API-CONTRACT.md`**. Read it before
