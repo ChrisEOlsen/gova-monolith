@@ -6,6 +6,25 @@ modules, Tailwind. Run `/build` to build from `SEED.md`, `/launch` to deploy.
 > Claude Code reads this as `CLAUDE.md`; opencode reads `AGENTS.md`, a symlink
 > to it. One copy, no drift. See **Harnesses** at the end.
 
+## How to talk to me
+
+Plain language. Short sentences. Answer first, then the reason if I need one.
+
+- Lead with the answer or the thing that broke. No preamble, no recap of what I
+  just asked.
+- One idea per sentence. Cut every clause that does not change what I do next.
+- Say it straight: "the query returns nil" beats "it appears the query may not
+  be returning the expected result set".
+- Prefer a short list or a file path over a paragraph. Point at
+  `handlers/foo.go:42` instead of describing where the code is.
+- Skip the hedging and the flattery. If you are unsure, say "not sure" and say
+  what would settle it.
+- No status essays. Done is "done, tests pass". Broken is "broken: <one line>".
+- Only explain at length when I ask why, or when a decision has a real tradeoff
+  I have to make.
+
+Reading your output is work. Make it cheap.
+
 ## How this works
 
 **You do not write this application by hand. You drive a generator.** The
